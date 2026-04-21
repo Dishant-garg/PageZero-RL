@@ -1,0 +1,30 @@
+# Secrets
+secrets.json
+.env
+!.env.example
+
+# Test scripts with credentials
+test_connection.py
+
+# Lock files
+uv.lock
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# OpenEnv outputs
+outputs/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+assets/*.png

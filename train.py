@@ -1,0 +1,680 @@
+"""
+GRPO Training Script — PageZero SRE Agent
+Follows the standard OpenEnv + TRL pattern (same as wordle.py example).
+
+Everything runs on the H100:
+  - vLLM (colocate mode) handles agent inference during GRPO — no separate process
+  - OpenEnv server runs on port 8000 (talks to GKE + external judge)
+  - External judge (Claude via Anthropic API) scores actions — no GPU needed
+
+Setup (2 terminals on H100):
+
+  # Install
+  pip install -e ".[train]"
+
+  # Terminal 1: OpenEnv server (adversarial mode with Claude judge)
+  GYM_MODE=adversarial LLM_BACKEND=anthropic ANTHROPIC_API_KEY=sk-ant-... uv run server
+
+  # Terminal 2: GRPO training (full 80GB for agent)
+  python train.py --vllm-mode colocate
+"""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import os
+from datetime import datetime
+from pathlib import Path
+
+# Help PyTorch reuse fragmented GPU memory (critical for TRL+vLLM colocate on 80GB)
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
+# Silence TRL experimental warning for rollout_func
+os.environ.setdefault("TRL_EXPERIMENTAL_SILENCE", "1")
+
+from datasets import Dataset
+from transformers import AutoTokenizer
+
+from peft import LoraConfig
+from trl import GRPOConfig, GRPOTrainer
+from trl.experimental.openenv import generate_rollout_completions
+
+# Requires: pip install -e ".[train]"  (from repo root)
+try:
+    from client import PageZeroEnvClient
+    from models import PageZeroAction, PageZeroObservation
+except ImportError:
+    from client import PageZeroEnvClient
+    from models import PageZeroAction, PageZeroObservation
+
+
+# ---- TRL 0.29.0 / vLLM 0.11.x compatibility ----
+# TRL 0.29.0 expects vLLM logprobs as list-of-lists (top-k per token),
+# but vLLM 0.11.x returns plain floats. Patch until TRL releases a fix.
+# See: https://github.com/huggingface/trl/issues/4159
+
+_orig_vllm_gen = None
+
+def _patch_vllm_generate(trainer):
+    """Wrap vLLM generate to ensure logprobs are in top-k list format."""
+    global _orig_vllm_gen
+    if _orig_vllm_gen is not None or not hasattr(trainer, 'vllm_generation'):
+        return
+    _orig_vllm_gen = trainer.vllm_generation.generate
+
+    def _wrapped_generate(**kwargs):
+        result = _orig_vllm_gen(**kwargs)
+        prompt_ids, completion_ids, logprobs, *rest = result
+        # If logprobs are plain floats, wrap them in lists for TRL's lp[0]
+        if logprobs and logprobs[0] and isinstance(logprobs[0][0], float):
+            logprobs = [[[lp] for lp in seq] for seq in logprobs]
+        return (prompt_ids, completion_ids, logprobs, *rest)
+
+    trainer.vllm_generation.generate = _wrapped_generate
+
+def patch_trl_vllm_compat():
+    """Apply TRL/vLLM compatibility patches. Call before trainer.train()."""
+    _orig_train = GRPOTrainer.train
+
+    def _patched_train(self, *args, **kwargs):
+        _patch_vllm_generate(self)
+        return _orig_train(self, *args, **kwargs)
+
+    GRPOTrainer.train = _patched_train
+
+# Auto-apply patches when running as script
+if __name__ != "__main__":
+    # Module import — patches available but not auto-applied
+    pass
+else:
+    patch_trl_vllm_compat()
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger(__name__)
+
+
+# ============================================================
+# System prompt
+# ============================================================
+
+SYSTEM_PROMPT = """You are a Staff SRE on-call. Diagnose and fix the cascading incident across the Application, PostgreSQL, and Redis cache.
+
+Output exactly ONE JSON object per turn representing your tool call.
+No explanations, no markdown, no prefixes. Just valid JSON.
+
+Format:
+{"tool": "pg_stat_activity", "args": {}}
+
+AVAILABLE TOOLS:
+Triage: check_alerts, get_service_metrics
+App: read_app_logs (args: lines), curl_endpoint (args: url)
+DB: pg_stat_activity, pg_locks, pg_explain_analyze (args: query), pg_cancel_query (args: pid), pg_create_index (args: table, column), pg_show_tables
+Cache: redis_info, redis_slowlog, redis_flush_db, redis_get_key (args: key)
+Infra: docker_ps, docker_stats (args: container), docker_restart (args: container)
+Resolution: done
+
+WORKFLOW:
+1. Review alerts and investigate (e.g. pg_stat_activity, read_app_logs).
+2. Trace the root cause. (Is the DB locking the cache? Is the cache starving the app?)
+3. Apply the fix (e.g. pg_cancel_query, pg_create_index).
+4. Verify the fix (curl_endpoint for 200 OK, redis_info for hit_rate).
+5. Call {"tool": "done", "args": {}} when the cluster is fully restored."""
+
+
+# ============================================================
+# Args
+# ============================================================
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="GRPO training for PageZero SRE agent")
+    parser.add_argument("--model-id", default="Qwen/Qwen3-0.6B", help="Agent model to fine-tune")
+    parser.add_argument("--env-url", default="http://localhost:8000", help="OpenEnv server URL")
+    parser.add_argument("--dataset-size", type=int, default=50, help="Number of training episodes")
+    parser.add_argument("--max-turns", type=int, default=15, help="Max commands per episode")
+    parser.add_argument("--max-new-tokens", type=int, default=512, help="Max tokens per agent response")
+    parser.add_argument("--num-generations", type=int, default=8, help="G for GRPO (8+ recommended for stable advantage estimation)")
+    parser.add_argument("--learning-rate", type=float, default=2e-6)
+    parser.add_argument("--gradient-accumulation-steps", type=int, default=4)
+    parser.add_argument("--num-epochs", type=int, default=1)
+    parser.add_argument("--max-steps", type=int, default=-1, help="Max GRPO training steps (-1 = auto)")
+    parser.add_argument("--save-steps", type=int, default=10)
+    parser.add_argument("--output-dir", default=None)
+    parser.add_argument("--push-to-hub", action="store_true", help="Push model to HF Hub after training")
+    parser.add_argument("--hub-repo", default=None, help="HF Hub repo, e.g. your-name/pagezero-sre-agent")
+    parser.add_argument(
+        "--vllm-mode", choices=("colocate", "server"), default="colocate",
+        help="vLLM mode: colocate (1 GPU) or server (separate vLLM process)",
+    )
+    parser.add_argument("--vllm-server-url", default="http://localhost:8001", help="vLLM server URL (server mode)")
+    parser.add_argument("--vllm-gpu-memory-utilization", type=float, default=0.5, help="vLLM GPU memory fraction (0.0-1.0)")
+    parser.add_argument("--temperature", type=float, default=1.0)  # T=1.0 optimal for GRPO exploration
+    parser.add_argument("--logging-steps", type=int, default=1)
+    parser.add_argument("--lora-r", type=int, default=16, help="LoRA rank")
+    parser.add_argument("--lora-alpha", type=int, default=32, help="LoRA alpha (typically 2x rank)")
+    parser.add_argument("--lora-dropout", type=float, default=0.05, help="LoRA dropout")
+    parser.add_argument("--report-to", default="none", choices=("tensorboard", "wandb", "none"),
+                        help="Logging backend for reward curves (default: none, uses CSV instead)")
+    parser.add_argument("--reward-log", default="reward_log.csv",
+                        help="CSV file for per-episode reward logging")
+    return parser.parse_args()
+
+
+# ============================================================
+# Helpers
+# ============================================================
+
+def sanitize_name(name: str) -> str:
+    return name.replace("/", "-")
+
+
+def format_observation(obs) -> str:
+    """Format observation into agent-readable text."""
+    tool_output = getattr(obs, "tool_output", "") or ""
+    sla_status = getattr(obs, "sla_status", "OK")
+    revenue_loss = getattr(obs, "revenue_loss_usd", 0.0)
+    alerts = getattr(obs, "active_alerts", [])
+    alert_str = "\n".join(alerts) if alerts else "None"
+    hint = getattr(obs, "hint", "") or ""
+    steps = getattr(obs, "step", 0)
+    max_steps = getattr(obs, "max_steps", 15)
+
+    text = f"""{tool_output}
+
+CURRENT ALERTS:
+{alert_str}
+
+SLA STATUS: {sla_status}
+REVENUE LOST: ${revenue_loss}"""
+
+    if hint:
+        text += f"\n\nHINT: {hint}"
+
+    text += f"\n\nStep {steps}/{max_steps}. Diagnose and fix this incident."
+    return text
+
+
+def format_history(history: list[dict]) -> str:
+    """Format conversation history into a condensed summary for the agent."""
+    if not history:
+        return ""
+    lines = ["PREVIOUS COMMANDS AND RESULTS:"]
+    for entry in history:
+        cmd = entry["command"]
+        output = entry["output"]
+        reward = entry.get("reward", 0.0)
+        feedback = entry.get("feedback", "")
+        # Truncate long outputs but keep enough context
+        if len(output) > 300:
+            output = output[:300] + "... (truncated)"
+        lines.append(f"$ {cmd}")
+        lines.append(f"  Output: {output}")
+        if feedback:
+            lines.append(f"  Feedback: {feedback}")
+    return "\n".join(lines)
+
+
+import json
+
+def parse_commands(text: str) -> list[str]:
+    """Extract JSON action from agent response.
+
+    Returns at most 1 command per turn to prevent the agent from spamming.
+    """
+    try:
+        # Find the first { and last }
+        start = text.find('{')
+        end = text.rfind('}')
+        if start != -1 and end != -1:
+            json_str = text[start:end+1]
+            return [json_str]
+    except Exception:
+        pass
+    return []
+
+
+def apply_chat_template(tokenizer, messages):
+    """Apply chat template with fallback if enable_thinking is not supported."""
+    try:
+        return tokenizer.apply_chat_template(
+            messages,
+            add_generation_prompt=True,
+            tokenize=False,
+            enable_thinking=False,
+        )
+    except TypeError:
+        return tokenizer.apply_chat_template(
+            messages,
+            add_generation_prompt=True,
+            tokenize=False,
+        )
+
+
+# ============================================================
+# Rollout — one full SRE episode
+# ============================================================
+
+def rollout_once(
+    trainer: GRPOTrainer,
+    env: PageZeroEnvClient,
+    tokenizer: AutoTokenizer,
+    system_prompt: str,
+
+    max_turns: int,
+) -> dict[str, list]:
+    """
+    Run one full PageZero incident episode.
+
+    The agent builds a conversation history across turns so it can do
+    multi-step diagnosis (triage -> investigate -> fix -> verify).
+    Each turn, the full history is included in the prompt so the agent
+    knows what it already tried.
+
+    Token accumulation: prompt_ids and completion_ids are extended across
+    turns. This matches the TRL OpenEnv pattern (see wordle example) —
+    GRPO assigns episode-level reward to the full token sequence.
+    """
+    result = env.reset()
+    observation = result.observation
+
+    prompt_ids: list[int] = []
+    completion_ids: list[int] = []
+    logprobs: list[float] = []
+    step_rewards: list[float] = []
+    diagnosis_rewards: list[float] = []
+    fix_rewards: list[float] = []
+
+    # Conversation history — agent needs this to avoid repeating commands
+    # and to build on previous investigation results
+    conversation_history: list[dict] = []
+
+    MAX_TOTAL_TOKENS = 4096  # cap to prevent OOM during backward pass
+
+    for _turn in range(max_turns):
+        if result.done:
+            break
+
+        # Stop if we've accumulated too many tokens (prevents CUDA OOM)
+        if len(completion_ids) >= MAX_TOTAL_TOKENS:
+            break
+
+        # Build prompt with full history so agent has context
+        history_text = format_history(conversation_history)
+        obs_text = format_observation(observation)
+
+        if history_text:
+            user_prompt = f"{history_text}\n\n---\n\nCURRENT OBSERVATION:\n{obs_text}"
+        else:
+            user_prompt = obs_text
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        prompt_text = apply_chat_template(tokenizer, messages)
+
+        # Generate with vLLM via TRL
+        rollout_outputs = generate_rollout_completions(trainer, [prompt_text])[0]
+        prompt_ids.extend(rollout_outputs["prompt_ids"])
+        completion_ids.extend(rollout_outputs["completion_ids"])
+        logprobs.extend(rollout_outputs["logprobs"])
+
+        completion_text = rollout_outputs.get("text") or tokenizer.decode(
+            rollout_outputs["completion_ids"], skip_special_tokens=True
+        )
+
+        # Parse and execute commands on real cluster
+        commands = parse_commands(completion_text)
+        if not commands:
+            step_rewards.append(-0.5)
+            conversation_history.append({
+                "agent_text": completion_text[:500],
+                "command": "invalid JSON",
+                "output": "(no valid command parsed)",
+                "reward": -0.5,
+                "feedback": "Invalid output — expected JSON object.",
+            })
+            continue
+
+        for cmd_json_str in commands:
+            try:
+                action_data = json.loads(cmd_json_str)
+                action = PageZeroAction(tool=action_data.get("tool", ""), args=action_data.get("args", {}))
+                result = env.step(action)
+                reward = float(result.reward or 0.0)
+                step_rewards.append(reward)
+                observation = result.observation
+
+                # Record in history for next turn's context
+                cmd_output = getattr(observation, "tool_output", "") or ""
+                hint = getattr(observation, "hint", "") or ""
+                conversation_history.append({
+                    "agent_text": completion_text[:500],
+                    "command": cmd_json_str,
+                    "output": cmd_output[:500],
+                    "reward": reward,
+                    "feedback": hint,
+                })
+
+                # Simple splitting for rewards
+                if action.tool.startswith("pg_cancel") or action.tool.startswith("pg_create"):
+                    fix_rewards.append(reward)
+                else:
+                    diagnosis_rewards.append(reward)
+
+                if result.done:
+                    break
+            except Exception as e:
+                logger.warning(f"Step error: {e}")
+                step_rewards.append(-0.1)
+                conversation_history.append({
+                    "command": cmd_json_str,
+                    "output": f"ERROR: {e}",
+                    "reward": -0.1,
+                    "feedback": "",
+                })
+                break
+
+    # Aggregate rewards
+    total_reward = sum(step_rewards) if step_rewards else -1.0
+    diagnosis_score = diagnosis_rewards[-1] if diagnosis_rewards else 0.0
+    fix_score = fix_rewards[-1] if fix_rewards else 0.0
+
+    # Save detailed agent transcript for eval/SFT
+    try:
+        import json
+        transcript_path = os.environ.get("AGENT_TRANSCRIPT_LOG", "agent_transcripts.jsonl")
+        initial_obs = getattr(observation, "command_output", "") or ""
+        agent_transcript = {
+            "total_reward": total_reward,
+            "diagnosis_reward": diagnosis_score,
+            "fix_reward": fix_score,
+            "num_steps": len(conversation_history),
+            "resolved": result.done and total_reward > 0,
+            "conversation": conversation_history,
+        }
+        with open(transcript_path, "a") as f:
+            f.write(json.dumps(agent_transcript) + "\n")
+    except Exception as e:
+        logger.warning(f"Failed to save agent transcript: {e}")
+
+    return {
+        "prompt_ids": prompt_ids,
+        "completion_ids": completion_ids,
+        "logprobs": logprobs,
+        "total_reward": total_reward,
+        "diagnosis_reward": diagnosis_score,
+        "fix_reward": fix_score,
+    }
+
+
+# ============================================================
+# Reward functions (TRL convention)
+# ============================================================
+
+def reward_total(completions: list[str], **kwargs) -> list[float]:
+    rewards = kwargs.get("total_reward") if kwargs else None
+    return [float(r) for r in rewards] if rewards else [0.0 for _ in completions]
+
+
+def reward_diagnosis(completions: list[str], **kwargs) -> list[float]:
+    rewards = kwargs.get("diagnosis_reward") if kwargs else None
+    return [float(r) for r in rewards] if rewards else [0.0 for _ in completions]
+
+
+def reward_fix(completions: list[str], **kwargs) -> list[float]:
+    rewards = kwargs.get("fix_reward") if kwargs else None
+    return [float(r) for r in rewards] if rewards else [0.0 for _ in completions]
+
+
+# ============================================================
+# Reward visualization
+# ============================================================
+
+def plot_rewards(csv_path: Path, out_path: Path = None):
+    """Plot reward curves from the CSV log. Works without tensorboard."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    episodes, totals, diags, fixes = [], [], [], []
+    with open(csv_path) as f:
+        reader = __import__("csv").reader(f)
+        next(reader)  # skip header
+        for row in reader:
+            episodes.append(int(row[0]))
+            totals.append(float(row[1]))
+            diags.append(float(row[2]))
+            fixes.append(float(row[3]))
+
+    if not episodes:
+        logger.warning("No episodes to plot")
+        return
+
+    fig, ax1 = plt.subplots(1, 1, figsize=(12, 6))
+
+    # Rolling average
+    window = min(10, len(episodes))
+    def rolling_avg(vals):
+        return [sum(vals[max(0,i-window):i+1]) / min(i+1, window) for i in range(len(vals))]
+
+    rolling = rolling_avg(totals)
+
+    # Total reward with rolling average
+    ax1.plot(episodes, totals, alpha=0.25, color="blue", marker="o", markersize=3, label="Per episode")
+    ax1.plot(episodes, rolling, color="blue", linewidth=2.5, label=f"Rolling avg ({window})")
+
+    # Trend line
+    import numpy as np
+    z = np.polyfit(episodes, totals, 1)
+    trend = np.poly1d(z)
+    ax1.plot(episodes, trend(episodes), color="red", linewidth=1.5, linestyle="--",
+             label=f"Trend ({'↑' if z[0] > 0 else '↓'} {abs(z[0]):.3f}/ep)")
+
+    ax1.set_ylabel("Total Reward")
+    ax1.set_xlabel("Episode")
+    ax1.set_title("PageZero SRE Agent — GRPO Training Reward Curve")
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    ax1.axhline(y=0, color="gray", linestyle="--", alpha=0.5)
+
+    # Annotate stats
+    ax1.text(0.02, 0.02, f"Episodes: {len(episodes)} | Final avg: {rolling[-1]:.2f} | Best: {max(totals):.2f}",
+             transform=ax1.transAxes, fontsize=9, verticalalignment="bottom",
+             bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.5))
+
+    plt.tight_layout()
+    save_path = out_path or csv_path.with_suffix(".png")
+    plt.savefig(save_path, dpi=150)
+    plt.close()
+    logger.info(f"Reward plot saved to {save_path}")
+
+
+# ============================================================
+# Main
+# ============================================================
+
+def main() -> None:
+    patch_trl_vllm_compat()
+    args = parse_args()
+
+    logger.info("=" * 60)
+    logger.info("PageZero SRE Agent — GRPO Training (OpenEnv + TRL)")
+    logger.info("=" * 60)
+    logger.info(f"Agent model:    {args.model_id}")
+    logger.info(f"Env URL:        {args.env_url}")
+    logger.info(f"Episodes:       {args.dataset_size}")
+    logger.info(f"Generations/G:  {args.num_generations}")
+    logger.info(f"vLLM mode:      {args.vllm_mode}")
+
+    # ---- Tokenizer ----
+    tokenizer = AutoTokenizer.from_pretrained(args.model_id)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    # ---- Connect to OpenEnv server ----
+    env = PageZeroEnvClient(base_url=args.env_url)
+
+    # ---- Dataset (each entry triggers one episode) ----
+    dataset_prompt = "Diagnose and fix this production incident."
+    dataset = Dataset.from_dict({"prompt": [dataset_prompt] * args.dataset_size})
+
+    # ---- GRPO Config (matches wordle.py pattern) ----
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    default_output_dir = Path("outputs") / f"pagezero-sre-grpo-{sanitize_name(args.model_id)}-{timestamp}"
+    output_dir = Path(args.output_dir or default_output_dir)
+
+    grpo_config = GRPOConfig(
+        use_vllm=True,
+        vllm_mode=args.vllm_mode,
+        vllm_server_base_url=args.vllm_server_url if args.vllm_mode == "server" else None,
+        vllm_gpu_memory_utilization=args.vllm_gpu_memory_utilization,
+        output_dir=str(output_dir),
+        max_steps=args.max_steps,
+        num_train_epochs=args.num_epochs,
+        learning_rate=args.learning_rate,
+        lr_scheduler_type="cosine",  # cosine decay works well with GRPO
+        warmup_steps=2,
+        max_grad_norm=1.0,  # standard clipping (0.1 was too conservative)
+        gradient_accumulation_steps=8,  # large effective batch for stable GRPO signal
+        per_device_train_batch_size=1,
+        generation_batch_size=args.num_generations,
+        num_generations=args.num_generations,
+        max_completion_length=args.max_new_tokens,
+        logging_steps=args.logging_steps,
+        save_strategy="steps",
+        save_steps=args.save_steps,
+        temperature=args.temperature,
+        report_to=args.report_to,
+        gradient_checkpointing=True,
+        gradient_checkpointing_kwargs={"use_reentrant": False},
+        push_to_hub=args.push_to_hub,
+        hub_model_id=args.hub_repo if args.push_to_hub else None,
+        hub_strategy="every_save",  # push each checkpoint to HF, not just final
+        save_total_limit=3,  # keep last 3 checkpoints to save disk
+        # DAPO-style improvements over vanilla GRPO:
+        loss_type="dapo",  # asymmetric clipping + dynamic sampling
+        mask_truncated_completions=True,  # exclude token-capped episodes from loss
+        beta=0.01,  # lighter KL penalty — model needs to diverge from base
+    )
+
+    # ---- Reward CSV logger ----
+    import csv
+    reward_log_path = output_dir / args.reward_log
+    output_dir.mkdir(parents=True, exist_ok=True)
+    episode_counter = [0]  # mutable counter for closure
+    all_rewards = []  # track all episode rewards for running stats
+
+    with open(reward_log_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["episode", "total_reward", "diagnosis_reward", "fix_reward", "timestamp"])
+
+    def _log_episode(total_r: float, diag_r: float, fix_r: float):
+        episode_counter[0] += 1
+        all_rewards.append(total_r)
+        with open(reward_log_path, "a", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow([episode_counter[0], total_r, diag_r, fix_r,
+                             datetime.now().isoformat()])
+
+        n = len(all_rewards)
+        mean_all = sum(all_rewards) / n
+        last10 = all_rewards[-10:]
+        mean_10 = sum(last10) / len(last10)
+        best = max(all_rewards)
+
+        logger.info(
+            f"Episode {episode_counter[0]}: reward={total_r:.2f} "
+            f"(diag={diag_r:.2f}, fix={fix_r:.2f}) | "
+            f"mean={mean_all:.2f}, mean(10)={mean_10:.2f}, best={best:.2f}"
+        )
+
+    # ---- Rollout function (called by GRPOTrainer each step) ----
+    def rollout_func(prompts: list[str], trainer: GRPOTrainer) -> dict[str, list]:
+        episode_prompt_ids: list[list[int]] = []
+        episode_completion_ids: list[list[int]] = []
+        episode_logprobs: list[list[float]] = []
+        total_rewards: list[float] = []
+        diagnosis_rewards: list[float] = []
+        fix_rewards: list[float] = []
+
+        for prompt_text in prompts:
+            episode = rollout_once(
+                trainer=trainer,
+                env=env,
+                tokenizer=tokenizer,
+                system_prompt=SYSTEM_PROMPT,
+                max_turns=args.max_turns,
+            )
+            episode_prompt_ids.append(episode["prompt_ids"])
+            episode_completion_ids.append(episode["completion_ids"])
+            episode_logprobs.append(episode["logprobs"])
+            total_rewards.append(episode["total_reward"])
+            diagnosis_rewards.append(episode["diagnosis_reward"])
+            fix_rewards.append(episode["fix_reward"])
+            _log_episode(episode["total_reward"], episode["diagnosis_reward"], episode["fix_reward"])
+
+        return {
+            "prompt_ids": episode_prompt_ids,
+            "completion_ids": episode_completion_ids,
+            "logprobs": episode_logprobs,
+            "total_reward": total_rewards,
+            "diagnosis_reward": diagnosis_rewards,
+            "fix_reward": fix_rewards,
+        }
+
+    # ---- LoRA config ----
+    peft_config = LoraConfig(
+        r=args.lora_r,
+        lora_alpha=args.lora_alpha,
+        lora_dropout=args.lora_dropout,
+        bias="none",
+        task_type="CAUSAL_LM",
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+    )
+
+    # ---- Trainer ----
+    trainer = GRPOTrainer(
+        model=args.model_id,
+        processing_class=tokenizer,
+        reward_funcs=[
+            reward_total,
+            reward_diagnosis,
+            reward_fix,
+        ],
+        train_dataset=dataset,
+        args=grpo_config,
+        rollout_func=rollout_func,
+        peft_config=peft_config,
+    )
+
+    # ---- Train ----
+    logger.info("Starting GRPO training...")
+    logger.info(f"Using {args.num_generations} rollouts per episode")
+
+    try:
+        trainer.train()
+    finally:
+        env.close()
+
+        # Always generate the reward plot — even if training was interrupted.
+        # CSV is written incrementally so we always have data.
+        try:
+            plot_rewards(reward_log_path, output_dir / "reward_plot.png")
+        except Exception as e:
+            logger.warning(f"Could not generate reward plot: {e}")
+
+    # ---- Save ----
+    trainer.save_model(str(output_dir))
+    logger.info(f"Model saved to {output_dir}")
+    logger.info(f"Reward log: {reward_log_path}")
+
+    if args.push_to_hub and args.hub_repo:
+        trainer.push_to_hub()
+        logger.info(f"Model pushed to https://huggingface.co/{args.hub_repo}")
+
+    logger.info("Done!")
+
+
+if __name__ == "__main__":
+    main()
