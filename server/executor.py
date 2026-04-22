@@ -1,7 +1,10 @@
 import traceback
 from typing import Dict, Any
 from .stack_backend import StackBackend
-from .config import APP_CONTAINER, POSTGRES_CONTAINER, REDIS_CONTAINER
+from .config import (
+    APP_CONTAINER, POSTGRES_CONTAINER, REDIS_CONTAINER,
+    APP_HEALTH_URL
+)
 
 
 class Executor:
@@ -14,7 +17,7 @@ class Executor:
             # Monitoring & Triage
             if tool_name == "check_alerts":
                 ps = self.backend.docker_ps()
-                app_health = self.backend.curl_endpoint("http://localhost:5001/health")
+                app_health = self.backend.curl_endpoint(APP_HEALTH_URL)
                 return f"Container Status:\n{ps}\n\nApp Health:\n{app_health}"
             elif tool_name == "get_service_metrics":
                 service = args.get("service")

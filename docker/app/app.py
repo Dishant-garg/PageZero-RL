@@ -6,10 +6,13 @@ from flask import Flask, jsonify
 
 app = Flask(__name__)
 
-# Connection string setup
-# Fails gracefully if not supplied, used primarily via docker envs.
-database_url = os.environ.get("DATABASE_URL", "postgresql://sre:sre123@postgres:5432/production")
-redis_url = os.environ.get("REDIS_URL", "redis://redis:6379/0")
+database_url = os.environ.get("DATABASE_URL")
+redis_url = os.environ.get("REDIS_URL")
+
+if not database_url:
+    raise ValueError("DATABASE_URL environment variable not set")
+if not redis_url:
+    raise ValueError("REDIS_URL environment variable not set")
 
 def get_db_connection():
     return psycopg2.connect(database_url)

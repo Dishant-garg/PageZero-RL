@@ -1,6 +1,8 @@
 import json
 import os
 import random
+from typing import List
+from pydantic import BaseModel, Field
 
 from dotenv import load_dotenv
 
@@ -11,64 +13,73 @@ from .config import (
 
 load_dotenv()
 
+class Scenario(BaseModel):
+    """Data model for SRE incident scenarios."""
+    name: str = Field(..., description="Scenario name in kebab-case")
+    difficulty: float = Field(..., ge=0.0, le=1.0, description="Difficulty level 0.0-1.0")
+    layer: str = Field(..., description="Layer: database, cache, application, or cross_layer")
+    alert: str = Field(..., description="Alert message (e.g. CRITICAL: ...)")
+    inject_commands: List[str] = Field(..., description="Bash commands to execute via docker exec")
+    root_cause: str = Field(..., description="Root cause explanation")
+    expected_fix: List[str] = Field(..., description="Tool names from: pg_cancel_query, pg_create_index, pg_vacuum, redis_flush_db, docker_restart, rollback_deploy")
+
 WARMUP_SCENARIOS = [
-    {
-        "name": "runaway-query",
-        "difficulty": 0.1,
-        "layer": "database",
-        "alert": "CRITICAL: API p99 latency > 5s, PostgreSQL CPU at 95%",
-        "inject_commands": [
+    Scenario(
+        name="runaway-query",
+        difficulty=0.1,
+        layer="database",
+        alert="CRITICAL: API p99 latency > 5s, PostgreSQL CPU at 95%",
+        inject_commands=[
             f'docker exec {POSTGRES_CONTAINER} psql -U sre -d production -c "SELECT pg_sleep(300), * FROM orders o1 CROSS JOIN orders o2 LIMIT 1;" &'
         ],
-        "root_cause": "Runaway CROSS JOIN query consuming all CPU",
-        "expected_fix": ["pg_cancel_query"],
-    },
-    {
-        "name": "missing-index-load",
-        "difficulty": 0.2,
-        "layer": "database",
-        "alert": "WARNING: /api/orders endpoint p99 > 3s",
-        "inject_commands": [
+        root_cause="Runaway CROSS JOIN query consuming all CPU",
+        expected_fix=["pg_cancel_query"],
+    ),
+    Scenario(
+        name="missing-index-load",
+        difficulty=0.2,
+        layer="database",
+        alert="WARNING: /api/orders endpoint p99 > 3s",
+        inject_commands=[
             "for i in $(seq 1 20); do curl -s http://localhost:5000/api/orders/user_${i}@company.com > /dev/null & done"
         ],
-        "root_cause": "Missing index on orders.user_email causing sequential scans under load",
-        "expected_fix": ["pg_create_index"],
-    },
-    {
-        "name": "redis-oom",
-        "difficulty": 0.2,
-        "layer": "cache",
-        "alert": "CRITICAL: Redis memory usage > 95%, OOM errors in app logs",
-        "inject_commands": [
+        root_cause="Missing index on orders.user_email causing sequential scans under load",
+        expected_fix=["pg_create_index"],
+    ),
+    Scenario(
+        name="redis-oom",
+        difficulty=0.2,
+        layer="cache",
+        alert="CRITICAL: Redis memory usage > 95%, OOM errors in app logs",
+        inject_commands=[
             f"docker exec {REDIS_CONTAINER} redis-cli DEBUG SET-ACTIVE-EXPIRE 0",
-            # Pre-generate data once instead of 1000 sequential docker exec calls
             f"docker exec {REDIS_CONTAINER} sh -c 'for i in $(seq 1 1000); do redis-cli SET garbage_$i $(head -c 500 /dev/urandom | base64 | head -c 500); done'",
         ],
-        "root_cause": "Redis memory exhausted by orphaned keys",
-        "expected_fix": ["redis_flush_db"],
-    },
-    {
-        "name": "redis-cache-drop",
-        "difficulty": 0.3,
-        "layer": "cache",
-        "alert": "WARNING: Cache miss rate spikes to 100%",
-        "inject_commands": [
+        root_cause="Redis memory exhausted by orphaned keys",
+        expected_fix=["redis_flush_db"],
+    ),
+    Scenario(
+        name="redis-cache-drop",
+        difficulty=0.3,
+        layer="cache",
+        alert="WARNING: Cache miss rate spikes to 100%",
+        inject_commands=[
             f"docker exec {REDIS_CONTAINER} redis-cli FLUSHALL"
         ],
-        "root_cause": "Cache was accidentally dropped, rebuilding data slowly",
-        "expected_fix": ["curl_endpoint"],
-    },
-    {
-        "name": "connection-pool-exhausted",
-        "difficulty": 0.4,
-        "layer": "database",
-        "alert": "CRITICAL: 'too many connections' errors, new requests timing out",
-        "inject_commands": [
+        root_cause="Cache was accidentally dropped, rebuilding data slowly",
+        expected_fix=["curl_endpoint"],
+    ),
+    Scenario(
+        name="connection-pool-exhausted",
+        difficulty=0.4,
+        layer="database",
+        alert="CRITICAL: 'too many connections' errors, new requests timing out",
+        inject_commands=[
             f"for i in $(seq 1 50); do docker exec {POSTGRES_CONTAINER} psql -U sre -d production -c 'SELECT pg_sleep(600)' & done"
         ],
-        "root_cause": "Leaked connections exhausting PostgreSQL max_connections",
-        "expected_fix": ["pg_cancel_query"],
-    },
+        root_cause="Leaked connections exhausting PostgreSQL max_connections",
+        expected_fix=["pg_cancel_query"],
+    ),
 ]
 
 # Sort warmup scenarios by difficulty for ordered selection
@@ -76,32 +87,30 @@ WARMUP_SCENARIOS.sort(key=lambda s: s["difficulty"])
 
 
 HARD_SCENARIOS = [
-    {
-        "name": "cascading-lock-timeout",
-        "difficulty": 0.7,
-        "layer": "cross_layer",
-        "alert": "CRITICAL: API Latency > 10s, entire application unresponsive.",
-        "inject_commands": [
+    Scenario(
+        name="cascading-lock-timeout",
+        difficulty=0.7,
+        layer="cross_layer",
+        alert="CRITICAL: API Latency > 10s, entire application unresponsive.",
+        inject_commands=[
             f'docker exec {POSTGRES_CONTAINER} psql -U sre -d production -c "BEGIN; LOCK TABLE orders IN EXCLUSIVE MODE; SELECT pg_sleep(300);" &',
             f"docker exec {REDIS_CONTAINER} redis-cli FLUSHDB",
         ],
-        "root_cause": "Exclusive lock on orders table created a connection pool queue, and cache was empty.",
-        "expected_fix": ["pg_cancel_query"],
-    },
-    {
-        "name": "full-stack-meltdown",
-        "difficulty": 0.9,
-        "layer": "cross_layer",
-        "alert": "CRITICAL: Multiple services degraded — app 503s, DB locks, Redis OOM.",
-        "inject_commands": [
-            # Lock the DB
+        root_cause="Exclusive lock on orders table created a connection pool queue, and cache was empty.",
+        expected_fix=["pg_cancel_query"],
+    ),
+    Scenario(
+        name="full-stack-meltdown",
+        difficulty=0.9,
+        layer="cross_layer",
+        alert="CRITICAL: Multiple services degraded — app 503s, DB locks, Redis OOM.",
+        inject_commands=[
             f'docker exec {POSTGRES_CONTAINER} psql -U sre -d production -c "BEGIN; LOCK TABLE orders IN EXCLUSIVE MODE; SELECT pg_sleep(300);" &',
-            # Fill Redis
             f"docker exec {REDIS_CONTAINER} sh -c 'for i in $(seq 1 800); do redis-cli SET meltdown_$i $(head -c 500 /dev/urandom | base64 | head -c 500); done'",
         ],
-        "root_cause": "Simultaneous DB lock and Redis memory exhaustion causing cascading failures across all layers.",
-        "expected_fix": ["pg_cancel_query", "redis_flush_db"],
-    },
+        root_cause="Simultaneous DB lock and Redis memory exhaustion causing cascading failures across all layers.",
+        expected_fix=["pg_cancel_query", "redis_flush_db"],
+    ),
 ]
 
 
@@ -136,40 +145,31 @@ class LLMDesigner:
             return fallback
 
         # Try LLM-generated scenario for non-warmup
-        prompt = f"""You are generating an SRE incident scenario for an RL agent.
+        prompt = f"""You are generating an SRE incident scenario for an RL agent training.
 The architecture is: Postgres ({POSTGRES_CONTAINER}), Redis ({REDIS_CONTAINER}), Flask App ({APP_CONTAINER}).
+
 Agent's skill profile: {json.dumps(skill_profile)}
 Target difficulty: {difficulty} (0.0 to 1.0)
 Agent's weakest layer: {weakest_layer or "unknown"}
 
-Generate a scenario in strict JSON format matching exactly this schema:
-{{
-    "name": "string (kebab-case)",
-    "difficulty": {difficulty},
-    "layer": "database|cache|application|cross_layer",
-    "alert": "string (e.g. CRITICAL: ...)",
-    "inject_commands": ["list of bash commands to execute on the docker container to cause the incident"],
-    "root_cause": "string explaining the issue",
-    "expected_fix": ["list of tool names from (pg_cancel_query, pg_create_index, pg_vacuum, redis_flush_db, docker_restart, rollback_deploy)"]
-}}
+Generate a realistic but challenging SRE incident scenario that:
+1. Targets the specified difficulty level
+2. Can be injected via docker exec commands
+3. Requires diagnosis and fixing using standard SRE tools
+4. Is appropriate for RL agent training
 
-Ensure the `inject_commands` are valid shell commands using `docker exec` against the containers.
-IMPORTANT: Return ONLY the raw JSON string without any markdown formatting like ```json.
-"""
+Keep inject_commands valid and executable."""
+
         try:
             response = self.client.models.generate_content(
                 model="gemini-2.5-flash",
                 contents=prompt,
+                response_schema=Scenario,
+                response_mime_type="application/json",
             )
-            raw_json = response.text.replace("```json", "").replace("```", "").strip()
-            scenario = json.loads(raw_json)
-            for key in ["name", "difficulty", "layer", "alert", "inject_commands"]:
-                if key not in scenario:
-                    return fallback
-            # Ensure expected_fix exists
-            if "expected_fix" not in scenario:
-                scenario["expected_fix"] = []
-            return scenario
+            scenario_data = json.loads(response.text)
+            scenario = Scenario(**scenario_data)
+            return scenario.model_dump()
         except Exception as e:
             print(f"Gemini generation failed, using fallback: {e}")
             return fallback
@@ -184,23 +184,23 @@ IMPORTANT: Return ONLY the raw JSON string without any markdown formatting like 
         if difficulty > HARD_SCENARIO_THRESHOLD:
             # Pick from hard scenarios, optionally biased by weakest layer
             candidates = HARD_SCENARIOS
-            layer_match = [s for s in candidates if s["layer"] == weakest_layer]
+            layer_match = [s for s in candidates if s.layer == weakest_layer]
             if layer_match:
-                return random.choice(layer_match)
-            return random.choice(candidates)
+                return random.choice(layer_match).model_dump()
+            return random.choice(candidates).model_dump()
 
         # Filter warmup scenarios to only those whose difficulty <= current + 0.15
         # This ensures the agent starts with easy tasks and gradually unlocks harder ones
-        eligible = [s for s in WARMUP_SCENARIOS if s["difficulty"] <= difficulty + 0.15]
+        eligible = [s for s in WARMUP_SCENARIOS if s.difficulty <= difficulty + 0.15]
         if not eligible:
             eligible = [WARMUP_SCENARIOS[0]]  # always have at least the easiest
 
         # Bias toward weakest layer if available
         if weakest_layer:
-            layer_match = [s for s in eligible if s["layer"] == weakest_layer]
+            layer_match = [s for s in eligible if s.layer == weakest_layer]
             if layer_match:
                 # 60% chance to pick from weak layer, 40% random
                 if random.random() < 0.6:
-                    return random.choice(layer_match)
+                    return random.choice(layer_match).model_dump()
 
-        return random.choice(eligible)
+        return random.choice(eligible).model_dump()

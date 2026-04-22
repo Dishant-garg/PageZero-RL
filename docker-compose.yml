@@ -2,15 +2,15 @@ services:
   app:
     build: ./docker/app
     container_name: pagezero-app-1
-    ports: ["5001:5000"]
+    ports: ["${APP_EXTERNAL_PORT}:${APP_INTERNAL_PORT}"]
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql://sre:sre123@postgres:5432/production
-      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql://${DB_USER}:${DB_PASSWORD}@postgres:${DB_PORT}/${DB_NAME}
+      REDIS_URL: redis://redis:${REDIS_PORT}/${REDIS_DB}
     networks:
       - pagezero-net
 
@@ -18,16 +18,16 @@ services:
     image: postgres:16
     container_name: pagezero-postgres-1
     environment:
-      POSTGRES_USER: sre
-      POSTGRES_PASSWORD: sre123
-      POSTGRES_DB: production
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
     volumes:
       - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
     ports: ["5432:5432"]
     networks:
       - pagezero-net
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U sre -d production"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
       interval: 5s
       timeout: 5s
       retries: 10

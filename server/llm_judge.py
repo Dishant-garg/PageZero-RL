@@ -1,5 +1,6 @@
 import json
 import os
+from pydantic import BaseModel, Field
 
 from dotenv import load_dotenv
 
@@ -14,6 +15,12 @@ from .config import (
 )
 
 load_dotenv()
+
+
+class EvaluationOutput(BaseModel):
+    """Structured output schema for terminal state evaluation."""
+    score: float = Field(..., ge=0.0, le=1.0, description="Performance score from 0.0 (terrible) to 1.0 (perfect)")
+    feedback: str = Field(..., description="Concise 1-2 sentence feedback explaining the score")
 
 _TRIAGE_TOOLS = {"check_alerts", "get_service_metrics", "get_error_rate"}
 _INVESTIGATE_TOOLS = {
@@ -112,31 +119,36 @@ class LLMJudge:
                 trimmed["output"] = out[:500] + "... [truncated]"
             trimmed_history.append(trimmed)
 
-        prompt = f"""You are a Principal SRE Judge evaluating a junior agent's incident response trajectory.
+        prompt = f"""You are a Principal SRE Judge evaluating a junior agent's incident response.
 
-Incident Scenario: {json.dumps(scenario.get('name'))}
-Root Cause: {json.dumps(scenario.get('root_cause'))}
-Expected Fix Tools: {json.dumps(scenario.get('expected_fix', []))}
-Terminal Cluster Health (Did they fix it?): {stack_healthy}
-SLA Status: {json.dumps(sla_status)}
+SCENARIO:
+Name: {scenario.get('name', 'unknown')}
+Root Cause: {scenario.get('root_cause', 'unknown')}
+Expected Fix Tools: {', '.join(scenario.get('expected_fix', []))}
 
-Trajectory History:
+OUTCOME:
+Stack Health: {'HEALTHY (✓ Fixed)' if stack_healthy else 'UNHEALTHY (✗ Not Fixed)'}
+SLA Status: {sla_status}
+
+AGENT TRAJECTORY:
 {json.dumps(trimmed_history, indent=2)}
 
-Evaluate the agent's performance. Based on order of operations (Triage -> Investigate -> Fix -> Verify) and whether they successfully diagnosed and mitigated the issue without doing destructive non-related actions (like randomly flushing databases without reason).
-Return exactly a JSON object in this format (and ONLY this):
-{{
-    "score": float between 0.0 and 1.0 (0 meaning terrible/destructive, 1.0 meaning perfect),
-    "feedback": "Concise 1-2 sentence feedback explaining the score"
-}}
-"""
+Evaluate the agent's incident response based on:
+1. Did they use proper SRE workflow (Triage → Investigate → Diagnose → Fix → Verify)?
+2. Did they successfully diagnose and mitigate the issue?
+3. Did they avoid reckless or destructive actions?
+4. Did they use the expected fix tools if needed?
+
+Provide a score (0.0 = terrible/destructive, 1.0 = perfect) and brief feedback."""
+
         try:
             response = self.client.models.generate_content(
                 model="gemini-2.5-flash",
                 contents=prompt,
+                response_schema=EvaluationOutput,
+                response_mime_type="application/json",
             )
-            raw = response.text.replace("```json", "").replace("```", "").strip()
-            data = json.loads(raw)
+            data = json.loads(response.text)
             score = float(data.get("score", fallback_score))
             feedback = str(data.get("feedback", fallback_feedback))
             return max(0.0, min(1.0, score)), feedback

@@ -6,9 +6,6 @@ secrets.json
 # Test scripts with credentials
 test_connection.py
 
-# Lock files
-uv.lock
-
 # Python
 __pycache__/
 *.pyc

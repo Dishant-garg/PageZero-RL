@@ -5,6 +5,9 @@ Change values here instead of digging through multiple files.
 """
 
 import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # ═══════════════════════════════════════════════════════════════════
 # Docker Container Names
@@ -12,6 +15,32 @@ import os
 POSTGRES_CONTAINER = "pagezero-postgres-1"
 REDIS_CONTAINER = "pagezero-redis-1"
 APP_CONTAINER = "pagezero-app-1"
+
+# ═══════════════════════════════════════════════════════════════════
+# Database Configuration (from .env)
+# ═══════════════════════════════════════════════════════════════════
+DB_HOST = os.getenv("DB_HOST", "postgres")
+DB_PORT = int(os.getenv("DB_PORT", "5432"))
+DB_USER = os.getenv("DB_USER", "sre")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "sre123")
+DB_NAME = os.getenv("DB_NAME", "production")
+DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+
+# ═══════════════════════════════════════════════════════════════════
+# Redis Configuration (from .env)
+# ═══════════════════════════════════════════════════════════════════
+REDIS_HOST = os.getenv("REDIS_HOST", "redis")
+REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
+REDIS_DB = int(os.getenv("REDIS_DB", "0"))
+REDIS_URL = f"redis://{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}"
+
+# ═══════════════════════════════════════════════════════════════════
+# Application Configuration (from .env)
+# ═══════════════════════════════════════════════════════════════════
+APP_INTERNAL_PORT = int(os.getenv("APP_INTERNAL_PORT", "5000"))
+APP_EXTERNAL_HOST = os.getenv("APP_EXTERNAL_HOST", "localhost")
+APP_EXTERNAL_PORT = int(os.getenv("APP_EXTERNAL_PORT", "5001"))
+APP_HEALTH_URL = f"http://{APP_EXTERNAL_HOST}:{APP_EXTERNAL_PORT}/health"
 
 # ═══════════════════════════════════════════════════════════════════
 # SLA / Revenue Settings
