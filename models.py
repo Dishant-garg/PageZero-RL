@@ -1,4 +1,4 @@
-from openenv.core.env_server.types import Action, Observation
+from openenv.core.env_server.types import Action, Observation, State
 from pydantic import Field
 from typing import Literal, Dict, Any, Optional, List
 

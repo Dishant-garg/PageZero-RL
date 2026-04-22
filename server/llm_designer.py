@@ -83,7 +83,7 @@ WARMUP_SCENARIOS = [
 ]
 
 # Sort warmup scenarios by difficulty for ordered selection
-WARMUP_SCENARIOS.sort(key=lambda s: s["difficulty"])
+WARMUP_SCENARIOS.sort(key=lambda s: s.difficulty)
 
 
 HARD_SCENARIOS = [
