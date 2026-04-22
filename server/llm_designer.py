@@ -60,16 +60,69 @@ WARMUP_SCENARIOS = [
     }
 ]
 
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
 class LLMDesigner:
-    """Uses an LLM (mocked here, should be connected to OpenAI/Gemini) to generate complex scenarios"""
+    """Uses Gemini API to generate complex scenarios, falling back to programmatic scenarios if unavailable."""
     
     def __init__(self):
-        pass
+        self.api_key = os.getenv("GEMINI_API_KEY")
+        if self.api_key and "your_" not in self.api_key:
+            try:
+                from google import genai
+                self.client = genai.Client(api_key=self.api_key)
+            except ImportError:
+                self.client = None
+        else:
+            self.client = None
         
     def design(self, skill_profile: dict, difficulty: float) -> dict:
-        # In a real environment, this calls Gemini or Claude.
-        # For hackathon robustness (if API breaks), we return a programmatic complex scenario.
+        fallback = self._get_fallback(difficulty)
         
+        if not self.client:
+            return fallback
+
+        prompt = f"""You are generating an SRE incident scenario for an RL agent.
+The architecture is: Postgres (pagezero-postgres-1), Redis (pagezero-redis-1), Flask App (pagezero-app-1).
+Agent's skill profile: {json.dumps(skill_profile)}
+Target difficulty: {difficulty} (0.0 to 1.0)
+
+Generate a scenario in strict JSON format matching exactly this schema:
+{{
+    "name": "string (kebab-case)",
+    "difficulty": {difficulty},
+    "layer": "database|cache|application|cross_layer",
+    "alert": "string (e.g. CRITICAL: ...)",
+    "inject_commands": ["list of bash commands to execute on the docker container to cause the incident"],
+    "root_cause": "string explaining the issue",
+    "expected_fix": ["list of tool names from (pg_cancel_query, pg_create_index, pg_vacuum, redis_flush_db, docker_restart, rollback_deploy)"]
+}}
+
+Ensure the `inject_commands` are valid shell commands using `docker exec` against the containers.
+IMPORTANT: Return ONLY the raw JSON string without any markdown formatting like ```json.
+"""
+        try:
+            response = self.client.models.generate_content(
+                model="gemini-2.5-flash", 
+                contents=prompt
+            )
+            # Cleanup JSON markdown if present
+            raw_json = response.text.replace("```json", "").replace("```", "").strip()
+            scenario = json.loads(raw_json)
+            
+            # Basic validation
+            for key in ["name", "difficulty", "layer", "alert", "inject_commands"]:
+                if key not in scenario:
+                    return fallback
+            return scenario
+        except Exception as e:
+            print(f"Gemini generation failed, using fallback: {e}")
+            return fallback
+
+    def _get_fallback(self, difficulty: float) -> dict:
         # Hard fallback for high-difficulty
         if difficulty > 0.6:
             return {

@@ -185,9 +185,9 @@ modify `server/app.py` to use factory mode:
 ```python
 # In server/app.py - use factory mode for concurrent sessions
 app = create_app(
-    PagezeroEnvironment,  # Pass class, not instance
-    PagezeroAction,
-    PagezeroObservation,
+    PageZeroEnvironment,  # Pass class, not instance
+    PageZeroAction,
+    PageZeroObservation,
     max_concurrent_envs=4,  # Allow 4 concurrent sessions
 )
 ```
@@ -221,12 +221,6 @@ Test the environment logic directly without starting the HTTP server:
 python3 server/PageZero_environment.py
 ```
 
-This verifies that:
-- Environment resets correctly
-- Step executes actions properly
-- State tracking works
-- Rewards are calculated correctly
-
 ### Running Locally
 
 Run the server locally for development:
@@ -235,21 +229,66 @@ Run the server locally for development:
 uvicorn server.app:app --reload
 ```
 
+## How to Run PageZero SRE Environment
+
+This codebase has been updated to support a full-stack SRE training environment. Follow these steps to set up the infrastructure and run the Gym environment.
+
+### 1. Infrastructure Setup (Docker)
+
+The environment requires a running Docker stack (PostgreSQL, Redis, and a Flask App).
+
+```bash
+# Start the full-stack infrastructure
+# Note: Requires sudo if user is not in the 'docker' group
+sudo docker compose up -d --build
+
+# Wait ~15 seconds for seeding to complete
+sleep 15
+```
+
+### 3. Start the OpenEnv Server
+
+Expose the Gym interface over HTTP/WebSocket for the agent.
+
+```bash
+# Run from project root
+source .venv/bin/activate
+uvicorn server.app:app --host 0.0.0.0 --port 8000 --reload
+```
+
+### 4. Verify the Connection
+
+Run the smoke-test to ensure the server logic correctly interfaces with the Docker containers.
+
+```bash
+python3 verify.py --verbose
+```
+
+### 5. Training with GRPO
+
+To train an agent using the Group Relative Policy Optimization (GRPO) algorithm:
+
+```bash
+python train.py \
+  --model-id Qwen/Qwen3-0.6B \
+  --dataset-size 50 \
+  --max-turns 15 \
+  --vllm-mode colocate
+```
+
 ## Project Structure
 
 ```
-PageZero/
-├── .dockerignore         # Docker build exclusions
-├── __init__.py            # Module exports
-├── README.md              # This file
-├── openenv.yaml           # OpenEnv manifest
-├── pyproject.toml         # Project metadata and dependencies
-├── uv.lock                # Locked dependencies (generated)
-├── client.py              # PagezeroEnv client
-├── models.py              # Action and Observation models
-└── server/
-    ├── __init__.py        # Server module exports
-    ├── PageZero_environment.py  # Core environment logic
-    ├── app.py             # FastAPI application (HTTP + WebSocket endpoints)
-    └── Dockerfile         # Container image definition
+PageZero-RL/
+├── docker/                # Dockerfiles and seed scripts
+├── server/
+│   ├── PageZero_environment.py  # Core Gym logic
+│   ├── stack_backend.py   # Docker interface
+│   ├── executor.py        # Tool execution router
+│   ├── app.py             # FastAPI entry point
+│   └── ...                # Judge, Designer, Curriculum
+├── models.py              # Action/Observation schemas
+├── train.py               # GRPO Training script
+├── verify.py              # Backend smoke tests
+└── docker-compose.yml     # Infrastructure orchestration
 ```

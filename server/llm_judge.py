@@ -41,16 +41,75 @@ def phase_score(current_phase: str, history: list) -> float:
     else:
         return -0.20  # Skipped phases penalty
 
+import os
+import json
+from dotenv import load_dotenv
+
+load_dotenv()
+
 class LLMJudge:
     def __init__(self):
-        # Would inject litellm or google.genai client here
-        pass
+        self.api_key = os.getenv("GEMINI_API_KEY")
+        if self.api_key and "your_" not in self.api_key:
+            try:
+                from google import genai
+                self.client = genai.Client(api_key=self.api_key)
+            except ImportError:
+                self.client = None
+        else:
+            self.client = None
 
     def get_phase_reward(self, tool: str, history: list) -> float:
         phase = detect_phase(tool, history)
         return phase_score(phase, history)
 
     def evaluate_terminal(self, scenario: dict, history: list, stack_healthy: bool, sla_status: dict) -> tuple[float, str]:
+        fallback_score, fallback_feedback = self._fallback_evaluate(scenario, history, stack_healthy, sla_status)
+        
+        if not self.client:
+            return fallback_score, fallback_feedback
+
+        # We'll trim the history output if it's too long
+        trimmed_history = []
+        for h in history:
+            trimmed = dict(h)
+            out = str(trimmed.get("output", ""))
+            if len(out) > 500:
+                trimmed["output"] = out[:500] + "... [truncated]"
+            trimmed_history.append(trimmed)
+
+        prompt = f"""You are a Principal SRE Judge evaluating a junior agent's incident response trajectory.
+
+Incident Scenario: {json.dumps(scenario.get('name'))}
+Root Cause: {json.dumps(scenario.get('root_cause'))}
+Terminal Cluster Health (Did they fix it?): {stack_healthy}
+SLA Status: {json.dumps(sla_status)}
+
+Trajectory History:
+{json.dumps(trimmed_history, indent=2)}
+
+Evaluate the agent's performance. Based on order of operations (Triage -> Investigate -> Fix -> Verify) and whether they successfully diagnosed and mitigated the issue without doing destructive non-related actions (like randomly flushing databases without reason).
+Return exactly a JSON object in this format (and ONLY this):
+{{
+    "score": float between 0.0 and 1.0 (0 meaning terrible/destructive, 1.0 meaning perfect),
+    "feedback": "Concise 1-2 sentence feedback explaining the score"
+}}
+"""
+        try:
+            response = self.client.models.generate_content(
+                model="gemini-2.5-flash", 
+                contents=prompt
+            )
+            raw = response.text.replace("```json", "").replace("```", "").strip()
+            data = json.loads(raw)
+            score = float(data.get("score", fallback_score))
+            feedback = str(data.get("feedback", fallback_feedback))
+            return max(0.0, min(1.0, score)), feedback
+        except Exception as e:
+            print(f"Gemini judge failed: {e}")
+            return fallback_score, fallback_feedback
+
+    def _fallback_evaluate(self, scenario: dict, history: list, stack_healthy: bool, sla_status: dict) -> tuple[float, str]:
         # Programmatic fast-evaluation (as sandbox for hackathon if no LLM key)
         # Check if the expected fix is in the history
         tools_used = [h["tool"] for h in history]

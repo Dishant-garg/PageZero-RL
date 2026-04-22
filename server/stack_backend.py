@@ -1,10 +1,16 @@
 import subprocess
 import json
 import time
+import os
+from pathlib import Path
 from typing import Dict, Any
 
+# Absolute path to docker-compose.yml for reliable subprocess calls
+_REPO_ROOT = Path(__file__).parent.parent
+COMPOSE_FILE = str(_REPO_ROOT / "docker-compose.yml")
+
 class StackBackend:
-    """Executes real commands against Postgres, Redis, and Docker containers."""
+    """Executes real commands against Postgres, Redis, and Docker containers via docker exec."""
 
     def __init__(self):
         self.incident_start_time = time.time()
@@ -15,13 +21,14 @@ class StackBackend:
         self.incident_start_time = time.time()
 
     def reset_containers(self):
-        """Resets the Docker containers back to a clean state if needed."""
-        self._run_cmd("docker compose -f ../docker-compose.yml restart")
+        """Resets the Docker containers back to a clean state."""
+        self._run_cmd(f"docker compose -f {COMPOSE_FILE} restart")
 
     # ═══ PostgreSQL ═══
     def pg_stat_activity(self) -> str:
         return self._run_psql(
-            "SELECT pid, state, wait_event_type, extract(epoch from (now() - query_start)) as duration_sec, "
+            "SELECT pid, state, wait_event_type, "
+            "extract(epoch from (now() - query_start)) as duration_sec, "
             "LEFT(query, 120) as query FROM pg_stat_activity "
             "WHERE state != 'idle' AND backend_type = 'client backend' "
             "ORDER BY query_start LIMIT 20;"
@@ -43,25 +50,38 @@ class StackBackend:
         if not query.strip().upper().startswith("SELECT"):
             return "ERROR: Only SELECT queries allowed for EXPLAIN ANALYZE"
         return self._run_psql(f"EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT) {query}")
-    
+
     def pg_stat_statements(self) -> str:
-        # Simplistic mock since pg_stat_statements requires extension installation
-        return self._run_psql(
-            "SELECT query, calls, total_exec_time, rows FROM pg_stat_statements ORDER BY total_exec_time DESC LIMIT 5;"
+        # Check if pg_stat_statements extension is available
+        check = self._run_psql(
+            "SELECT query, calls, total_exec_time, rows "
+            "FROM pg_stat_statements ORDER BY total_exec_time DESC LIMIT 5;"
         )
+        if "ERROR" in check:
+            # Fallback: show slow queries from pg_stat_activity
+            return self._run_psql(
+                "SELECT pid, state, extract(epoch from (now() - query_start)) as sec, "
+                "LEFT(query, 100) as query FROM pg_stat_activity "
+                "WHERE state != 'idle' ORDER BY query_start LIMIT 10;"
+            )
+        return check
 
     def pg_cancel_query(self, pid: int) -> str:
-        return self._run_psql(f"SELECT pg_cancel_backend({pid});")
+        return self._run_psql(f"SELECT pg_cancel_backend({int(pid)});")
 
     def pg_create_index(self, table: str, column: str) -> str:
+        # Sanitize names to prevent SQLi
+        table = table.replace('"', "").replace(";", "")
+        column = column.replace('"', "").replace(";", "")
         idx_name = f"idx_{table}_{column}"
         return self._run_psql(
             f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {idx_name} ON {table}({column});"
         )
-        
+
     def pg_vacuum(self, table: str) -> str:
+        table = table.replace('"', "").replace(";", "")
         return self._run_psql(f"VACUUM ANALYZE {table};")
-        
+
     def pg_show_tables(self) -> str:
         return self._run_psql(
             "SELECT table_name FROM information_schema.tables WHERE table_schema='public';"
@@ -69,21 +89,26 @@ class StackBackend:
 
     # ═══ Redis ═══
     def redis_info(self) -> str:
-        return self._run_redis("INFO stats\\r\\nINFO memory")
+        """Get Redis server stats and memory info (two separate redis-cli calls)."""
+        stats = self._run_redis_cmd("INFO stats")
+        memory = self._run_redis_cmd("INFO memory")
+        return f"=== STATS ===\n{stats}\n\n=== MEMORY ===\n{memory}"[:2000]
 
     def redis_slowlog(self) -> str:
-        return self._run_redis("SLOWLOG GET 10")
+        return self._run_redis_cmd("SLOWLOG GET 10")
 
     def redis_keys(self, pattern: str = "*") -> str:
-        return self._run_redis(f"KEYS {pattern}")
+        # Safety: don't allow dangerous patterns
+        pattern = pattern.strip() or "*"
+        return self._run_redis_cmd(f"KEYS {pattern}")
 
     def redis_flush_db(self) -> str:
-        return self._run_redis("FLUSHDB")
-        
+        return self._run_redis_cmd("FLUSHDB")
+
     def redis_get_key(self, key: str) -> str:
-        val = self._run_redis(f"GET {key}")
-        ttl = self._run_redis(f"TTL {key}")
-        return f"Value: {val}\\nTTL: {ttl}"
+        val = self._run_redis_cmd(f"GET {key}")
+        ttl = self._run_redis_cmd(f"TTL {key}")
+        return f"Value: {val}\nTTL: {ttl}"
 
     # ═══ Docker / Infrastructure ═══
     def docker_ps(self) -> str:
@@ -94,21 +119,23 @@ class StackBackend:
 
     def docker_stats(self, container: str) -> str:
         return self._run_cmd(
-            f"docker stats {container} --no-stream --format 'CPU: {{.CPUPerc}} MEM: {{.MemUsage}}'"
+            f"docker stats {container} --no-stream --format 'CPU: {{{{.CPUPerc}}}} MEM: {{{{.MemUsage}}}}'"
         )
 
     def docker_restart(self, container: str) -> str:
         return self._run_cmd(f"docker restart {container}")
-        
+
     def docker_logs(self, container: str, lines: int = 50) -> str:
-        return self._run_cmd(f"docker logs --tail={lines} {container}")
-        
+        return self._run_cmd(f"docker logs --tail={int(lines)} {container} 2>&1")
+
     def check_disk_usage(self) -> str:
         return self._run_cmd("df -h /")
 
     # ═══ Application / Alerts ═══
     def curl_endpoint(self, url: str) -> str:
-        return self._run_cmd(f"curl -s -m 5 -w '\\nHTTP %{{http_code}} Time: %{{time_total}}s' {url}")
+        return self._run_cmd(
+            f"curl -s -m 5 -w '\\nHTTP %{{http_code}} Time: %{{time_total}}s' '{url}'"
+        )
 
     # ═══ SLA Tracking ═══
     def get_sla_status(self) -> Dict[str, Any]:
@@ -128,41 +155,53 @@ class StackBackend:
             app_health = self.curl_endpoint("http://localhost:5000/health")
             if "HTTP 200" not in app_health:
                 return False
-                
+
             # Check DB locks
             locks = self.pg_locks()
-            if locks and "0 rows" not in locks and locks.strip() != "":
-                # If there's output and it's not empty/0 rows, we have locks
-                lines = [l for l in locks.split('\\n') if l.strip() and not l.startswith('(') and not l.startswith('-')]
-                if len(lines) > 2: # Has headers and some lock rows
+            if locks and "ERROR" not in locks:
+                # Count lock rows (skip header lines)
+                data_lines = [
+                    l for l in locks.split("\n")
+                    if l.strip()
+                    and not l.startswith("-")
+                    and not l.startswith("(")
+                    and "blocked_pid" not in l.lower()
+                ]
+                if len(data_lines) > 0:
                     return False
-            
+
             return True
         except Exception:
             return False
 
     # ═══ Internals ═══
     def _run_psql(self, sql: str) -> str:
-        # Escape quotes for bash execution
-        sql_escaped = sql.replace('"', '\\"')
+        """Run a SQL command inside the postgres container."""
         result = subprocess.run(
-            f'docker exec pagezero-postgres-1 psql -U sre -d production -c "{sql_escaped}"',
-            shell=True, capture_output=True, text=True, timeout=15
+            ["docker", "exec", "pagezero-postgres-1",
+             "psql", "-U", "sre", "-d", "production", "-c", sql],
+            capture_output=True, text=True, timeout=15
         )
         if result.returncode != 0:
             return f"ERROR: {result.stderr[:500]}"
         return result.stdout[:2000]
 
-    def _run_redis(self, cmd: str) -> str:
+    def _run_redis_cmd(self, cmd: str) -> str:
+        """Run a single Redis command inside the redis container."""
         result = subprocess.run(
-            f'docker exec pagezero-redis-1 redis-cli {cmd}',
+            f"docker exec pagezero-redis-1 redis-cli {cmd}",
             shell=True, capture_output=True, text=True, timeout=10
         )
         if result.returncode != 0:
             return f"ERROR: {result.stderr[:500]}"
         return result.stdout[:2000]
 
+    # Keep backward-compatible alias
+    def _run_redis(self, cmd: str) -> str:
+        return self._run_redis_cmd(cmd)
+
     def _run_cmd(self, cmd: str) -> str:
+        """Run an arbitrary shell command on the host."""
         result = subprocess.run(
             cmd, shell=True, capture_output=True, text=True, timeout=15
         )

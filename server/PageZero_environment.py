@@ -3,8 +3,8 @@ import subprocess
 import time
 from typing import Any, Dict
 
-from openenv.core.env_server.environment import BaseEnvironment
-from openenv.core.env_server.types import StepResult
+from openenv.core.env_server import Environment as BaseEnvironment, State
+from openenv.core.client_types import StepResult
 from models import PageZeroAction, PageZeroObservation
 from .stack_backend import StackBackend
 from .executor import Executor
@@ -15,7 +15,7 @@ from .schema_drift import SchemaDriftEngine
 
 logger = logging.getLogger(__name__)
 
-class PageZeroEnvironment(BaseEnvironment[PageZeroAction, PageZeroObservation]):
+class PageZeroEnvironment(BaseEnvironment[PageZeroAction, PageZeroObservation, State]):
     """PageZero Gym Environment for OpenEnv."""
 
     def __init__(self, **kwargs: Any):
@@ -146,3 +146,7 @@ class PageZeroEnvironment(BaseEnvironment[PageZeroAction, PageZeroObservation]):
             "scenario": self._scenario.get("name") if self._scenario else "None",
             "step_count": self._step_count
         }
+
+    @property
+    def state(self) -> State:
+        return State(step_count=self._step_count)

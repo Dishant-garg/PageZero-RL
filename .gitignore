@@ -17,6 +17,7 @@ __pycache__/
 dist/
 build/
 .eggs/
+.venv
 
 # OpenEnv outputs
 outputs/

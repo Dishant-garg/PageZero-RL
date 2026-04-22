@@ -35,10 +35,15 @@ except Exception as e:  # pragma: no cover
         "openenv is required for the web interface. Install dependencies with '\n    uv sync\n'"
     ) from e
 
+# Absolute imports from the project root
 try:
-    from ..models import PageZeroAction, PageZeroObservation
-    from .PageZero_environment import PageZeroEnvironment
-except ModuleNotFoundError:
+    from models import PageZeroAction, PageZeroObservation
+    from server.PageZero_environment import PageZeroEnvironment
+except ImportError:
+    import sys
+    import os
+    # Add project root to sys.path if not already there
+    sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from models import PageZeroAction, PageZeroObservation
     from server.PageZero_environment import PageZeroEnvironment
 

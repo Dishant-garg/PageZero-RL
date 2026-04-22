@@ -1,3 +1,6 @@
+-- PageZero Production DB Schema
+-- Tables are intentionally sparse on indexes — the agent will discover and fix them.
+
 CREATE TABLE users (
     id SERIAL PRIMARY KEY,
     username VARCHAR(100) NOT NULL,
@@ -24,16 +27,15 @@ CREATE TABLE products (
     category VARCHAR(50)
 );
 
--- Seed 10,000 users, 50,000 orders, 500 products
--- (Script generates realistic fake data)
+-- Seed 10,000 users
 INSERT INTO users (username, email, department)
 SELECT 
     'user_' || i, 
     'user_' || i || '@company.com', 
-    (ARRAY['engineering','sales','marketing','finance','hr'])[STRTOL(i::text, 10) % 5 + 1] 
+    (ARRAY['engineering','sales','marketing','finance','hr'])[i % 5 + 1]
 FROM generate_series(1, 10000) AS i;
 
--- Randomly distribute orders across users
+-- Seed 50,000 orders — no index on user_email intentionally!
 INSERT INTO orders (user_id, user_email, product_name, amount, status)
 SELECT 
     (random() * 9999 + 1)::int,
@@ -43,5 +45,14 @@ SELECT
     (ARRAY['pending','completed','shipped','cancelled'])[(random()*3)::int + 1]
 FROM generate_series(1, 50000);
 
+-- Seed 500 products
+INSERT INTO products (name, price, stock, category)
+SELECT
+    'Product-' || i,
+    (random() * 500 + 5)::decimal(10,2),
+    (random() * 200)::int,
+    (ARRAY['electronics','clothing','food','books','tools'])[i % 5 + 1]
+FROM generate_series(1, 500) AS i;
+
 -- NOTE: Deliberately NO indexes on orders.user_email or orders.status
--- These are the "bugs" the agent will discover and fix
+-- These are the "bugs" the SRE agent will discover and fix via pg_create_index
