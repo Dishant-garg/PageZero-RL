@@ -10,13 +10,12 @@ from typing import Dict
 
 from openenv.core import EnvClient
 from openenv.core.client_types import StepResult
-from openenv.core.env_server.types import State
 
-from .models import PageZeroAction, PageZeroObservation
+from .models import PageZeroAction, PageZeroObservation, PageZeroState
 
 
 class PageZeroEnvClient(
-    EnvClient[PageZeroAction, PageZeroObservation, State]
+    EnvClient[PageZeroAction, PageZeroObservation, PageZeroState]
 ):
     """
     Client for the PageZero Environment.
@@ -51,9 +50,6 @@ class PageZeroEnvClient(
             phase_history=obs_data.get("phase_history", []),
             is_done=obs_data.get("is_done", False),
             final_score=obs_data.get("final_score", None),
-            done=payload.get("done", False),
-            reward=payload.get("reward"),
-            metadata=obs_data.get("metadata", {}),
         )
 
         return StepResult(
@@ -62,11 +58,15 @@ class PageZeroEnvClient(
             done=payload.get("done", False),
         )
 
-    def _parse_state(self, payload: Dict) -> State:
+    def _parse_state(self, payload: Dict) -> PageZeroState:
         """
         Parse server response into State object.
         """
-        return State(
-            episode_id=payload.get("episode_id"),
+        return PageZeroState(
+            episode_id=payload.get("episode_id", ""),
             step_count=payload.get("step_count", 0),
+            difficulty=payload.get("difficulty", 0.15),
+            scenario_name=payload.get("scenario_name", "None"),
+            is_resolved=payload.get("is_resolved", False),
+            cumulative_reward=payload.get("cumulative_reward", 0.0),
         )

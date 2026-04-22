@@ -41,12 +41,8 @@ from trl import GRPOConfig, GRPOTrainer
 from trl.experimental.openenv import generate_rollout_completions
 
 # Requires: pip install -e ".[train]"  (from repo root)
-try:
-    from client import PageZeroEnvClient
-    from models import PageZeroAction, PageZeroObservation
-except ImportError:
-    from client import PageZeroEnvClient
-    from models import PageZeroAction, PageZeroObservation
+from client import PageZeroEnvClient
+from models import PageZeroAction, PageZeroObservation
 
 
 # ---- TRL 0.29.0 / vLLM 0.11.x compatibility ----
@@ -382,9 +378,7 @@ def rollout_once(
 
     # Save detailed agent transcript for eval/SFT
     try:
-        import json
         transcript_path = os.environ.get("AGENT_TRANSCRIPT_LOG", "agent_transcripts.jsonl")
-        initial_obs = getattr(observation, "command_output", "") or ""
         agent_transcript = {
             "total_reward": total_reward,
             "diagnosis_reward": diagnosis_score,

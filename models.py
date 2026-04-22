@@ -63,3 +63,13 @@ class PageZeroObservation(Observation):
     phase_history: List[str] = Field(default_factory=list, description="SRE phases executed so far")
     is_done: bool = Field(default=False, description="Is the incident investigation complete?")
     final_score: Optional[float] = Field(default=None, description="Terminal reward score")
+
+class PageZeroState(State):
+    """Internal state of the PageZero Environment."""
+    episode_id: str = Field(default="", description="ID of the current episode")
+    step_count: int = Field(default=0, description="Current step number")
+    difficulty: float = Field(default=0.15, description="Current curriculum difficulty")
+    scenario_name: str = Field(default="None", description="Name of current scenario")
+    is_resolved: bool = Field(default=False, description="Whether the incident was successfully resolved")
+    cumulative_reward: float = Field(default=0.0, description="Cumulative reward for the episode")
+

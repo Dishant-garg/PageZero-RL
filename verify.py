@@ -19,15 +19,11 @@ import time
 import importlib.util
 import os
 
-# ── Import StackBackend directly from its module file ──────────────────────
-# We do this to avoid triggering server/__init__.py which would require
-# the openenv package (only needed when running the full OpenEnv server).
 _repo_root = os.path.dirname(os.path.abspath(__file__))
-_backend_path = os.path.join(_repo_root, "server", "stack_backend.py")
-_spec = importlib.util.spec_from_file_location("stack_backend", _backend_path)
-_mod = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_mod)
-StackBackend = _mod.StackBackend
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
+
+from server.stack_backend import StackBackend
 
 GREEN = "\033[92m"
 RED   = "\033[91m"
@@ -148,7 +144,7 @@ def main(verbose: bool = False):
         ok("redis_slowlog")
 
     # Set + get a test key
-    backend._run_redis_cmd("SET verify_test_key hello_pagezero")
+    backend._run_redis_cmd("SET", "verify_test_key", "hello_pagezero")
     out = backend.redis_get_key("verify_test_key")
     if verbose: print(f"    redis_get_key: {out}")
     if "hello_pagezero" in out:
@@ -206,14 +202,14 @@ def main(verbose: bool = False):
     # ── 4. App Endpoint Tests ────────────────────────────────────────────
     section("4. Application Endpoints")
 
-    out = backend.curl_endpoint("http://localhost:5000/health")
+    out = backend.curl_endpoint("http://localhost:5001/health")
     if verbose: print(f"    curl /health: {out}")
     if "HTTP 200" in out:
         ok("GET /health → 200 OK")
     else:
         fail("GET /health — expected HTTP 200", out)
 
-    out = backend.curl_endpoint("http://localhost:5000/api/stats")
+    out = backend.curl_endpoint("http://localhost:5001/api/stats")
     if verbose: print(f"    curl /api/stats: {out[:200]}")
     if "HTTP 200" in out:
         ok("GET /api/stats → 200 OK")
