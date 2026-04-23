@@ -170,7 +170,7 @@ class PageZeroEnvironment(Environment):
         output = self.executor.execute(tool, args)
 
         # 3. Evaluate Step (Phase)
-        step_reward = self.judge.get_phase_reward(tool, self._history)
+        step_reward = self.judge.get_phase_reward(tool, self._history, scenario=self._scenario)
         self._cumulative_reward += step_reward
         self._state.cumulative_reward = self._cumulative_reward
 

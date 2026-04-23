@@ -243,11 +243,14 @@ Generate a realistic but challenging SRE incident scenario that:
 Keep inject_commands valid and executable."""
 
         try:
+            from google.genai import types
             response = self.client.models.generate_content(
                 model="gemini-2.5-flash",
                 contents=prompt,
-                response_schema=Scenario,
-                response_mime_type="application/json",
+                config=types.GenerateContentConfig(
+                    response_schema=Scenario,
+                    response_mime_type="application/json",
+                )
             )
             scenario_data = json.loads(response.text)
             scenario = Scenario(**scenario_data)

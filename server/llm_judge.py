@@ -17,6 +17,15 @@ from .config import (
 load_dotenv()
 
 
+class StepEvaluation(BaseModel):
+    """Structured output for per-step reward scoring."""
+    reward: float = Field(
+        ..., ge=-0.3, le=0.2,
+        description="Per-step reward. Positive for correct SRE actions, negative for harmful/wasteful ones."
+    )
+    rationale: str = Field(..., description="One-sentence explanation of the reward.")
+
+
 class EvaluationOutput(BaseModel):
     """Structured output schema for terminal state evaluation."""
     score: float = Field(..., ge=0.0, le=1.0, description="Performance score from 0.0 (terrible) to 1.0 (perfect)")
@@ -96,9 +105,83 @@ class LLMJudge:
         else:
             self.client = None
 
-    def get_phase_reward(self, tool: str, history: list) -> float:
-        phase = detect_phase(tool, history)
-        return phase_score(phase, history)
+    def get_phase_reward(self, tool: str, history: list,
+                         scenario: dict | None = None) -> float:
+        """Return a per-step reward using Gemini when available.
+
+        Gemini judges whether the current tool is the right next action given
+        the scenario context and recent history.  Falls back to deterministic
+        phase_score() on any API error so training stays stable.
+        """
+        deterministic = phase_score(detect_phase(tool, history), history)
+
+        if not self.client or not scenario:
+            return deterministic
+
+        # Build a compact window of the last 3 history entries for the prompt
+        recent = history[-3:] if len(history) >= 3 else history
+        recent_summary = []
+        for h in recent:
+            out = str(h.get("output", ""))
+            recent_summary.append({
+                "tool": h["tool"],
+                "output_snippet": out[:200] + ("..." if len(out) > 200 else ""),
+            })
+
+        prompt = f"""You are an expert SRE judge evaluating one step of an autonomous incident-response agent.
+
+SCENARIO:
+  Name: {scenario.get('name', 'unknown')}
+  Alert: {scenario.get('alert', '')}
+  Layer: {scenario.get('layer', '')}
+  Root Cause: {scenario.get('root_cause', '')}
+  Expected Fix: {', '.join(scenario.get('expected_fix', []))}
+
+SRE WORKFLOW PHASES (in order):
+  1. triage   — check_alerts, get_error_rate, get_service_metrics
+  2. investigate — pg_stat_activity, pg_locks, redis_info, redis_slowlog, docker_ps, docker_logs, read_app_logs, search_logs, check_disk_usage, redis_keys
+  3. diagnose — pg_explain_analyze, pg_stat_statements, get_recent_deploys
+  4. fix      — pg_cancel_query, pg_create_index, pg_vacuum, redis_flush_db, docker_restart, rollback_deploy
+  5. verify   — curl_endpoint, pg_stat_activity, redis_info, get_service_metrics
+  6. document — diagnose_root_cause → done
+
+RECENT HISTORY (last {len(recent_summary)} steps):
+{json.dumps(recent_summary, indent=2)}
+
+CURRENT ACTION: {tool}
+
+Rate this action with a reward in [-0.3, 0.2]:
+  +0.20 = perfect next step for this phase/scenario
+  +0.10 = reasonable but not ideal
+   0.00 = neutral / no information gain
+  -0.10 = wrong phase order or irrelevant tool
+  -0.20 = reckless (e.g. redis_flush_db without investigation)
+  -0.30 = destructive or clearly harmful
+
+Return ONLY the JSON."""
+
+        try:
+            from google.genai import types
+            
+            response = self.client.models.generate_content(
+                model="gemini-2.5-flash",   # faster/cheaper model for per-step scoring
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_schema=StepEvaluation,
+                    response_mime_type="application/json",
+                )
+            )
+            data = json.loads(response.text)
+            llm_reward = float(data.get("reward", 0.0))
+            rationale = data.get("rationale", "")
+            # Return 100% LLM reward, no deterministic fallback
+            print(f"  [Judge] {tool}: LLM={llm_reward:+.2f} | {rationale}")
+            return round(llm_reward, 3)
+        except Exception as e:
+            # Rate limits / network errors → fall back silently to 0.0 (no deterministic)
+            if "429" not in str(e) and "503" not in str(e):
+                print(f"  [Judge] Step reward LLM error: {e}")
+            return 0.0
 
     def evaluate_terminal(
         self, scenario: dict, history: list, stack_healthy: bool, sla_status: dict
@@ -142,11 +225,15 @@ Evaluate the agent's incident response based on:
 Provide a score (0.0 = terrible/destructive, 1.0 = perfect) and brief feedback."""
 
         try:
+            from google.genai import types
+            
             response = self.client.models.generate_content(
                 model="gemini-2.5-flash",
                 contents=prompt,
-                response_schema=EvaluationOutput,
-                response_mime_type="application/json",
+                config=types.GenerateContentConfig(
+                    response_schema=EvaluationOutput,
+                    response_mime_type="application/json",
+                )
             )
             data = json.loads(response.text)
             score = float(data.get("score", fallback_score))
