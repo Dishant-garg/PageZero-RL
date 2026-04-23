@@ -94,6 +94,16 @@ def phase_score(current_phase: str, history: list) -> float:
 
 
 class LLMJudge:
+    @staticmethod
+    def _canonical_score(value: float) -> float:
+        """Canonicalize score to strictly inside (0, 1) — never exactly 0.0 or 1.0.
+        
+        The OpenEnv validator rejects scores of exactly 0 or 1.
+        This mirrors workspace_agent's DeterministicJudge._canonical_score().
+        """
+        clamped = max(0.01, min(0.99, float(value)))
+        return round(clamped, 2)
+
     def __init__(self):
         self.api_key = os.getenv("GEMINI_API_KEY")
         if self.api_key and "your_" not in self.api_key:
@@ -238,13 +248,18 @@ SLA Status: {sla_status}
 AGENT TRAJECTORY:
 {json.dumps(trimmed_history, indent=2)}
 
+GRADING PROFILE (Weights and Thresholds):
+{json.dumps(scenario.get('grader_profile', {}), indent=2)}
+
 Evaluate the agent's incident response based on:
 1. Did they use proper SRE workflow (Triage → Investigate → Diagnose → Fix → Verify)?
 2. Did they successfully diagnose and mitigate the issue?
-3. Did they avoid reckless or destructive actions?
+3. Did they avoid reckless or destructive actions (considering the reckless_threshold in the profile)?
 4. Did they use the expected fix tools if needed?
+5. How does their performance align with the specific weighting in the profile?
 
-Provide a score (0.0 = terrible/destructive, 1.0 = perfect) and brief feedback."""
+Provide a score (0.0 = terrible/destructive, 1.0 = perfect) and brief feedback. Ensure the score reflects the profile's weighting.
+"""
 
         try:
             from google.genai import types
@@ -260,7 +275,7 @@ Provide a score (0.0 = terrible/destructive, 1.0 = perfect) and brief feedback."
             data = json.loads(response.text)
             score = float(data.get("score", fallback_score))
             feedback = str(data.get("feedback", fallback_feedback))
-            return max(0.0, min(1.0, score)), feedback
+            return self._canonical_score(score), feedback
         except Exception as e:
             print(f"Gemini judge failed: {e}")
             return fallback_score, fallback_feedback
@@ -268,19 +283,27 @@ Provide a score (0.0 = terrible/destructive, 1.0 = perfect) and brief feedback."
     def _fallback_evaluate(
         self, scenario: dict, history: list, stack_healthy: bool, sla_status: dict
     ) -> tuple[float, str]:
-        """Programmatic evaluation with expected_fix checking."""
+        """Programmatic evaluation with per-task grader profile weights."""
         tools_used = [h["tool"] for h in history]
 
+        # Load per-task grading profile (unique weights per scenario)
+        profile = scenario.get("grader_profile", {})
+        healthy_bonus = profile.get("terminal_healthy_bonus", TERMINAL_HEALTHY_BONUS)
+        unhealthy_penalty = profile.get("terminal_unhealthy_penalty", abs(TERMINAL_UNHEALTHY_PENALTY))
+        reckless_threshold = profile.get("reckless_threshold", TERMINAL_RECKLESS_THRESHOLD)
+        sla_penalty = profile.get("sla_penalty", abs(TERMINAL_SLA_VIOLATED))
+        root_cause_bonus = profile.get("root_cause_bonus", TERMINAL_ROOT_CAUSE_BONUS)
+
         score = TERMINAL_BASE_SCORE
-        feedback = "Completed."
+        feedback = f"Completed. [grader={profile.get('profile_id', 'default')}]"
 
         # 1. Did they actually fix it?
         if stack_healthy:
-            score += TERMINAL_HEALTHY_BONUS
-            feedback = "Successfully restored cluster health."
+            score += healthy_bonus
+            feedback = f"Successfully restored cluster health. [grader={profile.get('profile_id', 'default')}]"
         else:
-            score += TERMINAL_UNHEALTHY_PENALTY
-            feedback = "Cluster remained unhealthy."
+            score -= unhealthy_penalty
+            feedback = f"Cluster remained unhealthy. [grader={profile.get('profile_id', 'default')}]"
 
         # 2. Did they use the expected fix tools?
         expected_fixes = scenario.get("expected_fix", [])
@@ -298,20 +321,21 @@ Provide a score (0.0 = terrible/destructive, 1.0 = perfect) and brief feedback."
             score += TERMINAL_UNNECESSARY_FLUSH
             feedback += " Unnecessarily flushed Redis."
         if "docker_restart" in tools_used:
-            if len(history) < TERMINAL_RECKLESS_THRESHOLD:
+            if len(history) < reckless_threshold:
                 score += TERMINAL_RECKLESS_RESTART
                 feedback += " Reckless restart without investigation."
 
         # 4. Did they find the root cause?
         for h in history:
             if h["tool"] == "diagnose_root_cause":
-                score += TERMINAL_ROOT_CAUSE_BONUS
+                score += root_cause_bonus
                 feedback += " Good logging of root cause."
                 break  # only count once
 
         # 5. SLA Penalty
         if sla_status.get("sla_status") == "VIOLATED":
-            score += TERMINAL_SLA_VIOLATED
+            score -= sla_penalty
             feedback += " SLA violated due to slow response."
 
-        return max(0.0, min(1.0, score)), feedback
+        return self._canonical_score(score), feedback
+

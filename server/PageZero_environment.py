@@ -14,6 +14,8 @@ from .llm_designer import LLMDesigner
 from .llm_judge import LLMJudge
 from .schema_drift import SchemaDriftEngine
 from .config import DEFAULT_MAX_STEPS, INJECTION_WAIT_SECONDS
+import os
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +48,7 @@ class PageZeroEnvironment(Environment):
         self._cumulative_reward = 0.0
         self._state = PageZeroState(episode_id=str(uuid4()), step_count=0)
 
-    def reset(self) -> PageZeroObservation:
+    def reset(self, task_id: Optional[str] = None, **kwargs) -> PageZeroObservation:
         """Reset the environment to a new chaotic state."""
         self._step_count = 0
         self._history = []
@@ -56,25 +58,34 @@ class PageZeroEnvironment(Environment):
         # ── 1. Clean up residual state from the previous episode ──
         self._cleanup_previous_episode()
 
-        # ── 2. Pick scenario based on difficulty ──
-        difficulty = self.curriculum.get_difficulty()
-        use_warmup = self.curriculum.should_use_warmup()
-        weakest_layer = self.curriculum.get_weakest_layer()
+        # ── 2. Pick scenario ──
+        # Listen to task_id from arg or environment (set by OpenEnv validator)
+        task_id = task_id or os.environ.get("TASK_ID")
+        
+        if task_id:
+            scenario = self.designer.get_scenario_by_id(task_id)
+            difficulty = scenario.get("difficulty", 0.5)
+            use_warmup = False
+            weakest_layer = scenario.get("layer", "")
+            logger.info(f"Validator Override: Testing specific task {task_id}")
+        else:
+            difficulty = self.curriculum.get_difficulty()
+            use_warmup = self.curriculum.should_use_warmup()
+            weakest_layer = self.curriculum.get_weakest_layer()
 
-        scenario = self.designer.design(
-            self.curriculum.skill_profile,
-            difficulty,
-            use_warmup=use_warmup,
-            weakest_layer=weakest_layer,
-        )
+            scenario = self.designer.design(
+                self.curriculum.skill_profile,
+                difficulty,
+                use_warmup=use_warmup,
+                weakest_layer=weakest_layer,
+            )
+
         self._scenario = scenario
         logger.info(
             f"Episode {self._episode_count}: "
             f"difficulty={difficulty:.2f}, "
-            f"warmup={use_warmup}, "
-            f"scenario={scenario['name']}, "
-            f"layer={scenario.get('layer', '?')}, "
-            f"weakest={weakest_layer}"
+            f"scenario={scenario['name']} ({scenario.get('task_id', 'LLM')}), "
+            f"layer={scenario.get('layer', '?')}"
         )
 
         self._state = PageZeroState(

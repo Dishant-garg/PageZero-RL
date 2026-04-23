@@ -513,9 +513,9 @@ def run_episode(client: genai.Client, env: PageZeroEnvironment) -> Dict[str, Any
             steps_taken = step
             break
 
-    # ── Terminal scoring ──
+    # ── Terminal scoring (strictly inside (0,1) for OpenEnv validator) ──
     final_score = obs.final_score if obs.final_score is not None else 0.0
-    final_score = max(0.0, min(1.0, final_score))
+    final_score = max(0.01, min(0.99, final_score))
     success = final_score >= SUCCESS_THRESHOLD
 
     log_end(success, steps_taken, final_score, rewards)

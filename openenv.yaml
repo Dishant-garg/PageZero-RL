@@ -4,4 +4,16 @@ type: space
 runtime: fastapi
 app: server.app:app
 port: 8000
-
+tasks:
+  - id: task_1
+  - id: task_2
+  - id: task_3
+  - id: task_4
+  - id: task_5
+  - id: task_6
+  - id: task_7
+  - id: task_8
+  - id: task_9
+  - id: task_10
+  - id: task_11
+  - id: task_12
