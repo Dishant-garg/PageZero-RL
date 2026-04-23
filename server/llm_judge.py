@@ -118,15 +118,29 @@ class LLMJudge:
         if not self.client or not scenario:
             return deterministic
 
-        # Build a compact window of the last 3 history entries for the prompt
-        recent = history[-3:] if len(history) >= 3 else history
+        # The 'history' list now includes the current step at the very end.
+        # We must split this into PRIOR HISTORY and the CURRENT ACTION to prevent overlap.
+        prior_steps = history[:-1] if len(history) > 0 else []
+        current_step = history[-1] if len(history) > 0 else {"tool": tool, "output": "None"}
+        
+        recent = prior_steps[-3:] if len(prior_steps) >= 3 else prior_steps
         recent_summary = []
         for h in recent:
             out = str(h.get("output", ""))
+            had_error = out.startswith("ERROR")
+            snippet = out[:200] + ("..." if len(out) > 200 else "")
             recent_summary.append({
                 "tool": h["tool"],
-                "output_snippet": out[:200] + ("..." if len(out) > 200 else ""),
+                "output_snippet": f"[ERROR] {snippet}" if had_error else snippet,
+                "had_error": had_error,
+                "reward": h.get("reward", 0.0),
             })
+            
+        current_out = str(current_step.get("output", ""))
+        current_had_error = current_out.startswith("ERROR")
+        current_snippet = current_out[:400] + ("..." if len(current_out) > 400 else "")
+        if current_had_error:
+            current_snippet = f"[ERROR] {current_snippet}"
 
         prompt = f"""You are an expert SRE judge evaluating one step of an autonomous incident-response agent.
 
@@ -145,18 +159,26 @@ SRE WORKFLOW PHASES (in order):
   5. verify   — curl_endpoint, pg_stat_activity, redis_info, get_service_metrics
   6. document — diagnose_root_cause → done
 
-RECENT HISTORY (last {len(recent_summary)} steps):
+PRIOR HISTORY (last {len(recent_summary)} steps before now):
 {json.dumps(recent_summary, indent=2)}
 
-CURRENT ACTION: {tool}
+---
+ACTION TO EVALUATE: {tool}
+ACTION OUTCOME (What the tool returned): 
+{current_snippet}
+---
 
 Rate this action with a reward in [-0.3, 0.2]:
   +0.20 = perfect next step for this phase/scenario
   +0.10 = reasonable but not ideal
    0.00 = neutral / no information gain
-  -0.10 = wrong phase order or irrelevant tool
-  -0.20 = reckless (e.g. redis_flush_db without investigation)
-  -0.30 = destructive or clearly harmful
+  -0.10 = wrong phase order OR irrelevant tool
+  -0.20 = tool execution ERROR OR repeating a tool call OR reckless action
+  -0.30 = destructive action OR hallucinating non-existent tool parameters
+
+CRITICAL INSTRUCTIONS:
+1. If the ACTION OUTCOME starts with [ERROR], you MUST provide a negative reward (e.g. -0.20). Do not reward "intent".
+2. Explain your reasoning clearly based purely on the PRIOR HISTORY and ACTION OUTCOME. Do not invent history that didn't happen.
 
 Return ONLY the JSON."""
 

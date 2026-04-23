@@ -185,10 +185,15 @@ def main(verbose: bool = False):
 
     out = backend.docker_logs("pagezero-app-1", lines=10)
     if verbose: print(f"    docker_logs:\n{out[:300]}")
-    if "ERROR" in out:
+    if out.startswith("ERROR"):
+        # Only fail if the docker command itself errored (e.g., container not found)
         fail("docker_logs (app)", out)
     else:
-        ok("docker_logs — app logs returned")
+        error_count = sum(1 for l in out.split("\n") if "ERROR" in l)
+        if error_count > 0:
+            ok(f"docker_logs — logs returned ({error_count} historical error lines, normal after scenario runs)")
+        else:
+            ok("docker_logs — app logs returned")
 
     out = backend.check_disk_usage()
     if verbose: print(f"    disk_usage: {out}")

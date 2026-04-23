@@ -9,6 +9,7 @@ from typing import Dict, Any
 from .config import (
     POSTGRES_CONTAINER, REDIS_CONTAINER, APP_CONTAINER,
     REVENUE_RATE_PER_MINUTE, SLA_THRESHOLD_MINUTES,
+    APP_HEALTH_URL,
 )
 
 # Absolute path to docker-compose.yml for reliable subprocess calls
@@ -35,18 +36,24 @@ class StackBackend:
         self._run_cmd(f"docker compose -f {COMPOSE_FILE} restart")
 
     def cleanup_postgres(self):
-        """Kill all non-idle client backends to clean up runaway queries and locks."""
+        """Kill all non-idle client backends and restore permissions."""
         self._run_psql(
             "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
             "WHERE pid <> pg_backend_pid() "
             "AND backend_type = 'client backend' "
             "AND state <> 'idle';"
         )
+        # Re-GRANT permissions in case pg-privilege-revoke scenario ran
+        self._run_psql(
+            "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO sre;"
+        )
 
     def cleanup_redis(self):
-        """Flush Redis and re-enable active expiry."""
+        """Flush Redis, reset memory config, and re-enable active expiry."""
         self._run_redis_cmd("FLUSHDB")
-        self._run_redis_cmd("DEBUG SET-ACTIVE-EXPIRE 1")
+        self._run_redis_cmd("CONFIG", "SET", "maxmemory", "50mb")
+        self._run_redis_cmd("CONFIG", "SET", "maxmemory-policy", "noeviction")
+        self._run_redis_cmd("DEBUG", "SET-ACTIVE-EXPIRE", "1")
 
     def revert_schema_drift(self):
         """Revert known schema drifts so the next episode starts clean."""
@@ -194,7 +201,7 @@ class StackBackend:
         """Verifies if the actual stack is healthy — checks App, DB, and Redis."""
         try:
             # 1. Check App
-            app_health = self.curl_endpoint("http://localhost:5000/health")
+            app_health = self.curl_endpoint(APP_HEALTH_URL)
             if "HTTP 200" not in app_health:
                 return False
 

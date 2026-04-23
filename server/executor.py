@@ -20,9 +20,7 @@ class Executor:
                 app_health = self.backend.curl_endpoint(APP_HEALTH_URL)
                 return f"Container Status:\n{ps}\n\nApp Health:\n{app_health}"
             elif tool_name == "get_service_metrics":
-                service = args.get("service")
-                if not service:
-                    return "ERROR: missing 'service' argument"
+                service = args.get("service", "app")
                 return self.backend.docker_stats(f"pagezero-{service}-1")
             elif tool_name == "get_error_rate":
                 logs = self.backend.docker_logs(APP_CONTAINER, lines=30)
@@ -139,9 +137,9 @@ class Executor:
 
             # Meta / Resolution
             elif tool_name == "diagnose_root_cause":
-                cause = args.get("root_cause")
+                cause = args.get("root_cause") or args.get("diagnosis")
                 if not cause:
-                    return "ERROR: Please provide a description."
+                    return "ERROR: missing 'root_cause'"
                 return f"Root cause logged: {cause}"
             elif tool_name == "done":
                 return "Investigation concluded."

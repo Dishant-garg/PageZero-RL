@@ -169,18 +169,27 @@ class PageZeroEnvironment(Environment):
         # 2. Execute Tool
         output = self.executor.execute(tool, args)
 
-        # 3. Evaluate Step (Phase)
-        step_reward = self.judge.get_phase_reward(tool, self._history, scenario=self._scenario)
-        self._cumulative_reward += step_reward
-        self._state.cumulative_reward = self._cumulative_reward
-
-        # Track history
+        # 3. Track history FIRST so the Judge can see this step's output
         self._history.append({
             "tool": tool,
             "args": args,
             "output": output,
-            "reward": step_reward,
+            "reward": 0.0,  # placeholder, updated below
         })
+
+        # 4. Evaluate Step (Phase) — Judge now sees full history including this step
+        step_reward = self.judge.get_phase_reward(tool, self._history, scenario=self._scenario)
+        
+        # 4b. Deterministic Enforcement: Penalize Errors (Missing args, etc)
+        if output.startswith("ERROR"):
+            step_reward -= 0.15  # Hard penalty for invalid tool usage
+            logger.info(f"  [Enforcer] Applied -0.15 penalty for ERROR output")
+
+        # Update the placeholder reward in history
+        self._history[-1]["reward"] = step_reward
+
+        self._cumulative_reward += step_reward
+        self._state.cumulative_reward = self._cumulative_reward
 
         # SLA Status
         sla_info = self.backend.get_sla_status()
