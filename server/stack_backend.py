@@ -34,8 +34,11 @@ if _env_key:
     # 1. Handle actual key string (e.g., from Hugging Face Secrets or Colab)
     if "BEGIN" in _env_key:
         VM_SSH_KEY = "/tmp/pagezero_vm_key"
-        # Be aggressive about replacing both escaped and literal newlines
-        key_data = _env_key.replace('\\n', '\n').strip('"').strip("'")
+        # Handle both literal newlines and escaped \n
+        key_data = _env_key.strip('"').strip("'")
+        if "\\n" in key_data:
+            key_data = key_data.replace("\\n", "\n")
+        
         with open(VM_SSH_KEY, "w") as f:
             f.write(key_data)
         os.chmod(VM_SSH_KEY, 0o600)
@@ -196,8 +199,6 @@ class StackBackend:
     # ═══ Docker / Infrastructure ═══
     def docker_ps(self) -> str:
         out = self._run_cmd("docker ps --format '{{.Names}} - {{.Status}}'")
-        if out.startswith("ERROR"):
-            return "ERROR: Docker daemon is returning an error."
         return out
 
     def docker_stats(self, container: str) -> str:
@@ -284,7 +285,7 @@ class StackBackend:
                 docker_cmd, shell=True, capture_output=True, text=True, timeout=15
             )
         else:
-            ssh_args = ["ssh", "-q", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"]
+            ssh_args = ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"]
             if VM_SSH_KEY:
                 ssh_args.extend(["-i", VM_SSH_KEY])
             ssh_args.extend([f"{VM_USER}@{VM_HOST}", docker_cmd])
@@ -305,7 +306,7 @@ class StackBackend:
                 docker_cmd, shell=True, capture_output=True, text=True, timeout=10
             )
         else:
-            ssh_args = ["ssh", "-q", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"]
+            ssh_args = ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"]
             if VM_SSH_KEY:
                 ssh_args.extend(["-i", VM_SSH_KEY])
             ssh_args.extend([f"{VM_USER}@{VM_HOST}", docker_cmd])
@@ -328,7 +329,7 @@ class StackBackend:
                 cmd, shell=True, capture_output=True, text=True, timeout=15
             )
         else:
-            ssh_args = ["ssh", "-q", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"]
+            ssh_args = ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"]
             if VM_SSH_KEY:
                 ssh_args.extend(["-i", VM_SSH_KEY])
             ssh_args.extend([f"{VM_USER}@{VM_HOST}", cmd])
