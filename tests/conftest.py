@@ -25,44 +25,48 @@ def docker_compose_file():
 def containers_running(docker_compose_file):
     """
     Session fixture: ensure containers are up and healthy.
-    Just checks that containers exist and are running.
+    Handles both local and remote (SSH) environments via StackBackend.
     """
-    print("\n🐳 Checking Docker containers...")
+    from server.stack_backend import VM_HOST, StackBackend
+    
+    # Create a temporary backend just for health checking
+    backend = StackBackend()
+    
+    print(f"\n🐳 Checking Docker containers on {VM_HOST}...")
     
     max_retries = 20
     for i in range(max_retries):
         try:
-            ps_result = subprocess.run(
-                f"docker ps --filter 'name=pagezero' --format '{{{{.Names}}}}'",
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
+            # Use backend's docker_ps() which handles SSH automatically
+            ps_output = backend.docker_ps()
             
-            containers = ps_result.stdout.strip().split('\n')
-            container_names = [c for c in containers if c.strip()]
+            # Count running containers - looking for 'pagezero' and 'Up'
+            running_count = sum(1 for line in ps_output.split('\n') if "pagezero" in line and ("Up" in line or "running" in line))
             
-            if len(container_names) >= 3:
-                print(f"✅ All containers running: {', '.join(container_names)}")
+            if running_count >= 3:
+                print(f"✅ All containers running on {VM_HOST} ({running_count} found)")
                 break
             
+            # Only attempt to start containers if running on localhost
+            if i == 0 and VM_HOST == "localhost":
+                print("📦 Starting local Docker containers...")
+                subprocess.run(
+                    f"docker compose -f {docker_compose_file} up -d",
+                    shell=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=60
+                )
+            elif i == 0:
+                print(f"⚠️  Remote containers not fully up on {VM_HOST} ({running_count}/3). Waiting...")
+
         except Exception as e:
-            pass
-        
-        if i == 0:
-            print("📦 Starting Docker containers...")
-            result = subprocess.run(
-                f"docker compose -f {docker_compose_file} up -d",
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=60
-            )
+            if i == 0:
+                print(f"❌ Error checking containers: {e}")
         
         if i == max_retries - 1:
-            raise RuntimeError(f"Containers failed to start after {max_retries} retries")
-        time.sleep(1)
+            raise RuntimeError(f"Containers failed to start/be-found on {VM_HOST} after {max_retries} retries. Output: {ps_output if 'ps_output' in locals() else 'None'}")
+        time.sleep(2)
     
     yield
     

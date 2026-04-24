@@ -12,6 +12,9 @@ from .config import (
     TERMINAL_ROOT_CAUSE_BONUS, TERMINAL_SLA_VIOLATED,
     TERMINAL_EXPECTED_FIX_BONUS, TERMINAL_WRONG_FIX_PENALTY,
     TERMINAL_RECKLESS_THRESHOLD,
+    TERMINAL_ERROR_PENALTY_PER, TERMINAL_REPEAT_PENALTY_PER,
+    TERMINAL_EFFICIENCY_WEIGHT,
+    DEFAULT_MAX_STEPS,
 )
 
 load_dotenv()
@@ -283,8 +286,10 @@ Provide a score (0.0 = terrible/destructive, 1.0 = perfect) and brief feedback. 
     def _fallback_evaluate(
         self, scenario: dict, history: list, stack_healthy: bool, sla_status: dict
     ) -> tuple[float, str]:
-        """Programmatic evaluation with per-task grader profile weights."""
+        """Programmatic evaluation with efficiency, error, and repetition penalties."""
         tools_used = [h["tool"] for h in history]
+        num_steps = len(history)
+        max_steps = DEFAULT_MAX_STEPS
 
         # Load per-task grading profile (unique weights per scenario)
         profile = scenario.get("grader_profile", {})
@@ -295,47 +300,76 @@ Provide a score (0.0 = terrible/destructive, 1.0 = perfect) and brief feedback. 
         root_cause_bonus = profile.get("root_cause_bonus", TERMINAL_ROOT_CAUSE_BONUS)
 
         score = TERMINAL_BASE_SCORE
-        feedback = f"Completed. [grader={profile.get('profile_id', 'default')}]"
+        feedback_parts = []
 
-        # 1. Did they actually fix it?
+        # ── 1. Did they actually fix it? ──
         if stack_healthy:
             score += healthy_bonus
-            feedback = f"Successfully restored cluster health. [grader={profile.get('profile_id', 'default')}]"
+            feedback_parts.append("Restored cluster health.")
         else:
             score -= unhealthy_penalty
-            feedback = f"Cluster remained unhealthy. [grader={profile.get('profile_id', 'default')}]"
+            feedback_parts.append("Cluster remained unhealthy.")
 
-        # 2. Did they use the expected fix tools?
+        # ── 2. Did they use the expected fix tools? ──
         expected_fixes = scenario.get("expected_fix", [])
         if expected_fixes:
             used_correct = [f for f in expected_fixes if f in tools_used]
             if used_correct:
                 score += TERMINAL_EXPECTED_FIX_BONUS
-                feedback += f" Correctly used {', '.join(used_correct)}."
+                feedback_parts.append(f"Correctly used {', '.join(used_correct)}.")
             else:
                 score += TERMINAL_WRONG_FIX_PENALTY
-                feedback += f" Did not use expected fix ({', '.join(expected_fixes)})."
+                feedback_parts.append(f"Did not use expected fix ({', '.join(expected_fixes)}).")
 
-        # 3. Did they do reckless things?
+        # ── 3. Reckless actions ──
         if "redis_flush_db" in tools_used and scenario.get("layer") != "cache":
             score += TERMINAL_UNNECESSARY_FLUSH
-            feedback += " Unnecessarily flushed Redis."
+            feedback_parts.append("Unnecessarily flushed Redis.")
         if "docker_restart" in tools_used:
-            if len(history) < reckless_threshold:
+            if num_steps < reckless_threshold:
                 score += TERMINAL_RECKLESS_RESTART
-                feedback += " Reckless restart without investigation."
+                feedback_parts.append("Reckless restart without investigation.")
 
-        # 4. Did they find the root cause?
+        # ── 4. Root cause bonus ──
         for h in history:
             if h["tool"] == "diagnose_root_cause":
                 score += root_cause_bonus
-                feedback += " Good logging of root cause."
-                break  # only count once
+                feedback_parts.append("Good logging of root cause.")
+                break
 
-        # 5. SLA Penalty
+        # ── 5. SLA Penalty ──
         if sla_status.get("sla_status") == "VIOLATED":
             score -= sla_penalty
-            feedback += " SLA violated due to slow response."
+            feedback_parts.append("SLA violated due to slow response.")
 
+        # ── 6. ERROR Penalty: penalize each step that returned an error ──
+        error_count = sum(
+            1 for h in history
+            if str(h.get("output", "")).startswith("ERROR")
+        )
+        if error_count > 0:
+            error_penalty = error_count * TERMINAL_ERROR_PENALTY_PER
+            score += error_penalty
+            feedback_parts.append(f"{error_count} tool errors ({error_penalty:+.2f}).")
+
+        # ── 7. REPETITION Penalty: penalize redundant consecutive same-tool calls ──
+        repeat_count = 0
+        for i in range(1, len(history)):
+            if history[i]["tool"] == history[i - 1]["tool"]:
+                repeat_count += 1
+        if repeat_count > 0:
+            repeat_penalty = repeat_count * TERMINAL_REPEAT_PENALTY_PER
+            score += repeat_penalty
+            feedback_parts.append(f"{repeat_count} redundant repeats ({repeat_penalty:+.2f}).")
+
+        # ── 8. EFFICIENCY Bonus: reward solving it quickly ──
+        if num_steps > 0 and stack_healthy:
+            efficiency_ratio = 1.0 - (num_steps / max_steps)
+            efficiency_bonus = TERMINAL_EFFICIENCY_WEIGHT * max(0.0, efficiency_ratio)
+            score += efficiency_bonus
+            feedback_parts.append(f"Efficiency: {num_steps}/{max_steps} steps ({efficiency_bonus:+.2f}).")
+
+        profile_id = profile.get('profile_id', 'default')
+        feedback = f"[grader={profile_id}] " + " ".join(feedback_parts)
         return self._canonical_score(score), feedback
 

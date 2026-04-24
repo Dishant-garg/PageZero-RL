@@ -92,16 +92,21 @@ REWARD_BACKWARD_PHASE = -0.10    # Went backward in SRE workflow
 # ═══════════════════════════════════════════════════════════════════
 # Terminal Evaluation Reward Values
 # ═══════════════════════════════════════════════════════════════════
-TERMINAL_BASE_SCORE = 0.5
-TERMINAL_HEALTHY_BONUS = 0.4
+TERMINAL_BASE_SCORE = 0.3
+TERMINAL_HEALTHY_BONUS = 0.25
 TERMINAL_UNHEALTHY_PENALTY = -0.4
 TERMINAL_UNNECESSARY_FLUSH = -0.2
 TERMINAL_RECKLESS_RESTART = -0.2
 TERMINAL_ROOT_CAUSE_BONUS = 0.1
 TERMINAL_SLA_VIOLATED = -0.1
-TERMINAL_EXPECTED_FIX_BONUS = 0.15     # agent used the correct fix
-TERMINAL_WRONG_FIX_PENALTY = -0.1      # agent "fixed" with wrong tool
+TERMINAL_EXPECTED_FIX_BONUS = 0.1      # agent used the correct fix
+TERMINAL_WRONG_FIX_PENALTY = -0.15     # agent "fixed" with wrong tool
 TERMINAL_RECKLESS_THRESHOLD = 3        # min steps before restart is OK
+
+# Efficiency Penalties (penalize wasteful, error-prone agents)
+TERMINAL_ERROR_PENALTY_PER = -0.05     # per step that returned ERROR
+TERMINAL_REPEAT_PENALTY_PER = -0.03    # per redundant repeat of same tool
+TERMINAL_EFFICIENCY_WEIGHT = 0.15      # bonus scaled by (1 - steps_used/max_steps)
 
 # ═══════════════════════════════════════════════════════════════════
 # Train.py Penalties

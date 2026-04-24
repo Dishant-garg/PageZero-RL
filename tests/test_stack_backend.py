@@ -205,16 +205,10 @@ class TestStackBackendUtilities:
     """Test utility and setup functions."""
     
     def test_reset_containers(self, stack_backend):
-        """Verify containers can be reset."""
-        from server.stack_backend import COMPOSE_FILE
-        result = subprocess.run(
-            f"docker compose -f {COMPOSE_FILE} ps",
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
-        assert "pagezero" in result.stdout.lower() or result.returncode == 0
+        """Verify containers are running (via SSH if remote, local if not)."""
+        result = stack_backend.docker_ps()
+        assert isinstance(result, str)
+        assert "pagezero" in result.lower() or "Up" in result
     
     def test_cleanup_postgres(self, stack_backend):
         """Verify cleanup_postgres executes without error."""
