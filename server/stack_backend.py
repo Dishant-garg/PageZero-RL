@@ -27,7 +27,19 @@ _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 # When running locally, these default to localhost (docker containers)
 VM_HOST = os.getenv("VM_HOST", "localhost")  # VM IP or hostname
 VM_USER = os.getenv("VM_USER", "ubuntu")  # SSH user for VM
-VM_SSH_KEY = os.getenv("VM_SSH_KEY", None)  # Path to SSH private key
+_env_key = os.getenv("VM_SSH_KEY", None)
+VM_SSH_KEY = None
+
+if _env_key:
+    # If the environment variable contains the actual key string (e.g., from Hugging Face Secrets)
+    if "BEGIN" in _env_key:
+        VM_SSH_KEY = "/tmp/gcp_vm_key"
+        with open(VM_SSH_KEY, "w") as f:
+            f.write(_env_key.replace('\\n', '\n'))
+        os.chmod(VM_SSH_KEY, 0o600)
+    else:
+        # Otherwise, assume it's already a file path
+        VM_SSH_KEY = _env_key
 
 
 class StackBackend:
