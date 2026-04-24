@@ -15,6 +15,7 @@ dist/
 build/
 .eggs/
 .venv
+test_vm_connection.py
 
 # OpenEnv outputs
 outputs/

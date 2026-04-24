@@ -12,12 +12,22 @@ from .config import (
     APP_HEALTH_URL,
 )
 
+from dotenv import load_dotenv
+load_dotenv()
+
 # Absolute path to docker-compose.yml for reliable subprocess calls
 _REPO_ROOT = Path(__file__).parent.parent
 COMPOSE_FILE = str(_REPO_ROOT / "docker-compose.yml")
 
 # Regex to reject anything that isn't a valid SQL identifier
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
+# ═══ Remote VM Configuration ═══
+# When running on HF Spaces, point to containers on remote VM
+# When running locally, these default to localhost (docker containers)
+VM_HOST = os.getenv("VM_HOST", "localhost")  # VM IP or hostname
+VM_USER = os.getenv("VM_USER", "ubuntu")  # SSH user for VM
+VM_SSH_KEY = os.getenv("VM_SSH_KEY", None)  # Path to SSH private key
 
 
 class StackBackend:
@@ -239,22 +249,45 @@ class StackBackend:
 
     # ═══ Internals ═══
     def _run_psql(self, sql: str) -> str:
-        """Run a SQL command inside the postgres container."""
-        result = subprocess.run(
-            ["docker", "exec", POSTGRES_CONTAINER,
-             "psql", "-U", "sre", "-d", "production", "-c", sql],
-            capture_output=True, text=True, timeout=15
+        """Run a SQL command inside postgres container (local or remote via SSH)."""
+        docker_cmd = (
+            f"docker exec {POSTGRES_CONTAINER} "
+            f"psql -U sre -d production -c \"{sql}\""
         )
+        
+        if VM_HOST == "localhost":
+            result = subprocess.run(
+                docker_cmd, shell=True, capture_output=True, text=True, timeout=15
+            )
+        else:
+            ssh_args = ["ssh", "-q", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"]
+            if VM_SSH_KEY:
+                ssh_args.extend(["-i", VM_SSH_KEY])
+            ssh_args.extend([f"{VM_USER}@{VM_HOST}", docker_cmd])
+            result = subprocess.run(
+                ssh_args, shell=False, capture_output=True, text=True, timeout=15
+            )
         if result.returncode != 0:
             return f"ERROR: {result.stderr[:500]}"
         return result.stdout[:2000]
 
     def _run_redis_cmd(self, *args: str) -> str:
-        """Run a single Redis command inside the redis container (no shell)."""
-        result = subprocess.run(
-            ["docker", "exec", REDIS_CONTAINER, "redis-cli"] + list(args),
-            capture_output=True, text=True, timeout=10
-        )
+        """Run a Redis command inside redis container (local or remote via SSH)."""
+        args_str = " ".join(args)
+        docker_cmd = f"docker exec {REDIS_CONTAINER} redis-cli {args_str}"
+        
+        if VM_HOST == "localhost":
+            result = subprocess.run(
+                docker_cmd, shell=True, capture_output=True, text=True, timeout=10
+            )
+        else:
+            ssh_args = ["ssh", "-q", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"]
+            if VM_SSH_KEY:
+                ssh_args.extend(["-i", VM_SSH_KEY])
+            ssh_args.extend([f"{VM_USER}@{VM_HOST}", docker_cmd])
+            result = subprocess.run(
+                ssh_args, shell=False, capture_output=True, text=True, timeout=10
+            )
         if result.returncode != 0:
             return f"ERROR: {result.stderr[:500]}"
         return result.stdout[:2000]
@@ -265,10 +298,19 @@ class StackBackend:
         return self._run_redis_cmd(*cmd.split())
 
     def _run_cmd(self, cmd: str) -> str:
-        """Run an arbitrary shell command on the host."""
-        result = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True, timeout=15
-        )
+        """Run an arbitrary shell command (local or remote via SSH to VM)."""
+        if VM_HOST == "localhost":
+            result = subprocess.run(
+                cmd, shell=True, capture_output=True, text=True, timeout=15
+            )
+        else:
+            ssh_args = ["ssh", "-q", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"]
+            if VM_SSH_KEY:
+                ssh_args.extend(["-i", VM_SSH_KEY])
+            ssh_args.extend([f"{VM_USER}@{VM_HOST}", cmd])
+            result = subprocess.run(
+                ssh_args, shell=False, capture_output=True, text=True, timeout=15
+            )
         if result.returncode != 0:
             return f"ERROR: {result.stderr[:500]}"
         return result.stdout[:2000]

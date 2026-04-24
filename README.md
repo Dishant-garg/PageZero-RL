@@ -1,3 +1,16 @@
+---
+title: Pagezero Environment Server
+emoji: ⌨️
+colorFrom: green
+colorTo: pink
+sdk: docker
+pinned: false
+app_port: 8000
+base_path: /web
+tags:
+  - openenv
+---
+
 <div align="center">
   <h1>🚨 PageZero</h1>
   <h3>An Autonomous SRE Reinforcement Learning Benchmark</h3>
