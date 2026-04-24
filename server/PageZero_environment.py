@@ -148,7 +148,7 @@ class PageZeroEnvironment(Environment):
         except Exception as e:
             logger.warning(f"Cleanup failed (non-fatal): {e}")
 
-    def step(self, action: PageZeroAction) -> StepResult[PageZeroObservation]:
+    def step(self, action: PageZeroAction) -> PageZeroObservation:
         """Execute a tool, evaluate the SRE phase, and track SLA."""
         self._step_count += 1
         self._state.step_count = self._step_count
@@ -244,9 +244,11 @@ class PageZeroEnvironment(Environment):
             phase_history=[h["tool"] for h in self._history],
             is_done=done,
             final_score=final_score,
+            reward=step_reward,
+            done=done,
         )
 
-        return StepResult(observation=obs, reward=step_reward, done=done)
+        return obs
 
     def get_reward(self, observation: PageZeroObservation, done: bool) -> float:
         """The reward is handled in step(), just return 0 here."""

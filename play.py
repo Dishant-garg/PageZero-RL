@@ -467,9 +467,17 @@ def run_episode(client: genai.Client, env: PageZeroEnvironment) -> Dict[str, Any
             # 5. Step the environment
             action_obj = PageZeroAction(tool=tool, args=args)
             step_result = env.step(action_obj)
-            obs = step_result.observation
-            reward = float(step_result.reward or 0.0)
-            done = bool(step_result.done)
+
+            # Compatibility path: some env versions return StepResult,
+            # while newer OpenEnv-style envs return Observation directly.
+            if hasattr(step_result, "observation"):
+                obs = step_result.observation
+                reward = float(getattr(step_result, "reward", 0.0) or 0.0)
+                done = bool(getattr(step_result, "done", False))
+            else:
+                obs = step_result
+                reward = float(getattr(obs, "reward", 0.0) or 0.0)
+                done = bool(getattr(obs, "done", False) or getattr(obs, "is_done", False))
 
             # 6. Detect errors in output
             error_str = None
