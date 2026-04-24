@@ -31,15 +31,25 @@ _env_key = os.getenv("VM_SSH_KEY", None)
 VM_SSH_KEY = None
 
 if _env_key:
-    # If the environment variable contains the actual key string (e.g., from Hugging Face Secrets)
+    # 1. Handle actual key string (e.g., from Hugging Face Secrets or Colab)
     if "BEGIN" in _env_key:
-        VM_SSH_KEY = "/tmp/gcp_vm_key"
+        VM_SSH_KEY = "/tmp/pagezero_vm_key"
+        # Be aggressive about replacing both escaped and literal newlines
+        key_data = _env_key.replace('\\n', '\n').strip('"').strip("'")
         with open(VM_SSH_KEY, "w") as f:
-            f.write(_env_key.replace('\\n', '\n'))
+            f.write(key_data)
         os.chmod(VM_SSH_KEY, 0o600)
+        print(f"📦 PageZero: Using SSH Key from environment string (extracted to {VM_SSH_KEY})")
+    # 2. Handle file path (local machine)
+    elif os.path.exists(os.path.expanduser(_env_key)):
+        VM_SSH_KEY = os.path.expanduser(_env_key)
+        print(f"📦 PageZero: Using SSH Key from local file: {VM_SSH_KEY}")
     else:
-        # Otherwise, assume it's already a file path
+        # Fallback for relative paths or non-existent files
         VM_SSH_KEY = _env_key
+        print(f"📦 PageZero: Using SSH Key path (file not found locally): {VM_SSH_KEY}")
+else:
+    print("📦 PageZero: No SSH Key provided (VM_SSH_KEY). Assuming local mode or passwordless access.")
 
 
 class StackBackend:
@@ -55,7 +65,9 @@ class StackBackend:
 
     def reset_containers(self):
         """Resets the Docker containers back to a clean state."""
-        self._run_cmd(f"docker compose -f {COMPOSE_FILE} restart")
+        # Use relative path for remote VM, absolute for local
+        compose_path = "./docker-compose.yml" if VM_HOST != "localhost" else COMPOSE_FILE
+        self._run_cmd(f"docker compose -f {compose_path} restart")
 
     def cleanup_postgres(self):
         """Kill all non-idle client backends and restore permissions."""

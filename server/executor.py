@@ -20,7 +20,9 @@ class Executor:
                 app_health = self.backend.curl_endpoint(APP_HEALTH_URL)
                 return f"Container Status:\n{ps}\n\nApp Health:\n{app_health}"
             elif tool_name == "get_service_metrics":
-                service = args.get("service", "app")
+                service = args.get("service")
+                if not service:
+                    return "ERROR: missing 'service' argument"
                 return self.backend.docker_stats(f"pagezero-{service}-1")
             elif tool_name == "get_error_rate":
                 logs = self.backend.docker_logs(APP_CONTAINER, lines=30)

@@ -206,8 +206,9 @@ class TestStackBackendUtilities:
     
     def test_reset_containers(self, stack_backend):
         """Verify containers can be reset."""
+        from server.stack_backend import COMPOSE_FILE
         result = subprocess.run(
-            "docker compose -f /Users/pranayyb/Documents/openenv/PageZero-RL/docker-compose.yml ps",
+            f"docker compose -f {COMPOSE_FILE} ps",
             shell=True,
             capture_output=True,
             text=True,
