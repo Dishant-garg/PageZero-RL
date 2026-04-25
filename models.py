@@ -61,8 +61,10 @@ class PageZeroObservation(Observation):
     max_steps: int = Field(default=15, description="Maximum allowed steps before failure")
     hint: Optional[str] = Field(default=None, description="Optional feedback or error hints")
     phase_history: List[str] = Field(default_factory=list, description="SRE phases executed so far")
-    is_done: bool = Field(default=False, description="Is the incident investigation complete?")
+    is_done: bool = Field(default=False, description="Whether the incident was successfully resolved (legacy field)")
     final_score: Optional[float] = Field(default=None, description="Terminal reward score")
+    reward: float = Field(default=0.0, description="Step reward")
+    done: bool = Field(default=False, description="Is the incident investigation complete?")
 
 class PageZeroState(State):
     """Internal state of the PageZero Environment."""

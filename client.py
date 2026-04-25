@@ -11,7 +11,10 @@ from typing import Dict
 from openenv.core import EnvClient
 from openenv.core.client_types import StepResult
 
-from .models import PageZeroAction, PageZeroObservation, PageZeroState
+try:
+    from .models import PageZeroAction, PageZeroObservation, PageZeroState
+except (ImportError, ValueError):
+    from models import PageZeroAction, PageZeroObservation, PageZeroState
 
 
 class PageZeroEnvClient(
@@ -37,25 +40,24 @@ class PageZeroEnvClient(
         """
         Parse server response into StepResult[PageZeroObservation].
         """
-        obs_data = payload.get("observation", {})
-        observation = PageZeroObservation(
-            tool_output=obs_data.get("tool_output", ""),
-            active_alerts=obs_data.get("active_alerts", []),
-            sla_status=obs_data.get("sla_status", "OK"),
-            revenue_loss_usd=obs_data.get("revenue_loss_usd", 0.0),
-            downtime_minutes=obs_data.get("downtime_minutes", 0.0),
-            step=obs_data.get("step", 0),
-            max_steps=obs_data.get("max_steps", 15),
-            hint=obs_data.get("hint", None),
-            phase_history=obs_data.get("phase_history", []),
-            is_done=obs_data.get("is_done", False),
-            final_score=obs_data.get("final_score", None),
-        )
+        obs_data = payload.get("observation")
+        if obs_data is None:
+            # Fallback: payload itself is the observation
+            obs_data = payload
+        
+        # Ensure reward/done are in obs_data for the model constructor
+        obs_data = dict(obs_data)
+        if "reward" in payload and "reward" not in obs_data:
+            obs_data["reward"] = payload.get("reward")
+        if "done" in payload and "done" not in obs_data:
+            obs_data["done"] = payload.get("done")
+        
+        observation = PageZeroObservation(**obs_data)
 
         return StepResult(
             observation=observation,
-            reward=payload.get("reward"),
-            done=payload.get("done", False),
+            reward=payload.get("reward", observation.reward),
+            done=payload.get("done", observation.done),
         )
 
     def _parse_state(self, payload: Dict) -> PageZeroState:

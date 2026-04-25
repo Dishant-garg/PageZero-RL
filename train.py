@@ -34,8 +34,12 @@ from datasets import Dataset
 from transformers import AutoTokenizer
 from trl import GRPOConfig, GRPOTrainer
 
-from client import PageZeroEnvClient
-from models import PageZeroAction
+try:
+    from .client import PageZeroEnvClient
+    from .models import PageZeroAction
+except (ImportError, ValueError):
+    from client import PageZeroEnvClient
+    from models import PageZeroAction
 
 
 # ---- Optional TRL/vLLM compatibility patch for older stacks ----
