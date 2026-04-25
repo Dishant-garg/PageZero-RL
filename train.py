@@ -527,7 +527,7 @@ def plot_rewards(csv_path: Path, out_path: Path | None = None) -> None:
         reader = __import__("csv").reader(f)
         next(reader)
         for row in reader:
-            episodes.append(int(row[0]))
+            episodes.append(int(float(row[0])))
             totals.append(float(row[1]))
             diags.append(float(row[2]))
             fixes.append(float(row[3]))

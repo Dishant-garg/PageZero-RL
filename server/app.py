@@ -53,8 +53,24 @@ app = create_app(
     PageZeroAction,
     PageZeroObservation,
     env_name="PageZero",
-    max_concurrent_envs=1,  # increase this number to allow more concurrent WebSocket sessions
+    max_concurrent_envs=10,  # increased to allow ghost sessions from Jupyter notebooks to exist
 )
+
+@app.get("/")
+async def root():
+    """Root endpoint for basic health check and navigation."""
+    return {
+        "status": "online",
+        "message": "PageZero Environment Server is running",
+        "documentation": "https://github.com/openenv-core",
+        "endpoints": {
+            "reset": "/reset (POST)",
+            "step": "/step (POST)",
+            "state": "/state (GET)",
+            "schema": "/schema (GET)",
+            "ws": "/ws (WebSocket)"
+        }
+    }
 
 
 def main(host: str = "0.0.0.0", port: int = 8000):

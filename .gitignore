@@ -3,7 +3,7 @@ secrets.json
 .env
 !.env.example
 
-.node_modules/
+node_modules/
 
 # Test scripts with credentials
 test_connection.py

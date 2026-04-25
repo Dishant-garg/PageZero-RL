@@ -30,6 +30,7 @@ class PageZeroEnvironment(Environment):
       4. Lets the agent diagnose and fix the incident
       5. Scores the agent and feeds the result back into the curriculum
     """
+    SUPPORTS_CONCURRENT_SESSIONS = True
 
     def __init__(self, **kwargs: Any):
         super().__init__(**kwargs)
