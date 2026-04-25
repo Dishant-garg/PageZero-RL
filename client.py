@@ -47,10 +47,15 @@ class PageZeroEnvClient(
         
         # Ensure reward/done are in obs_data for the model constructor
         obs_data = dict(obs_data)
-        if "reward" in payload and "reward" not in obs_data:
-            obs_data["reward"] = payload.get("reward")
-        if "done" in payload and "done" not in obs_data:
-            obs_data["done"] = payload.get("done")
+        if "reward" in payload:
+            # Coerce None to 0.0 to satisfy Pydantic float type
+            val = payload.get("reward")
+            obs_data["reward"] = float(val) if val is not None else 0.0
+        
+        if "done" in payload:
+            # Coerce None to False to satisfy Pydantic bool type
+            val = payload.get("done")
+            obs_data["done"] = bool(val) if val is not None else False
         
         observation = PageZeroObservation(**obs_data)
 

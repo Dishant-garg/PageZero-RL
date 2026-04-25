@@ -189,7 +189,7 @@ class PageZeroEnvironment(Environment):
         })
 
         # 4. Evaluate Step (Phase) — Judge now sees full history including this step
-        step_reward = self.judge.get_phase_reward(tool, self._history, scenario=self._scenario)
+        step_reward = self.judge.get_phase_reward(tool, self._history, scenario=self._scenario) or 0.0
         
         # 4b. Deterministic Enforcement: Penalize Errors (Missing args, etc)
         if output.startswith("ERROR"):
