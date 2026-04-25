@@ -53,7 +53,7 @@ app = create_app(
     PageZeroAction,
     PageZeroObservation,
     env_name="PageZero",
-    max_concurrent_envs=10,  # increased to allow ghost sessions from Jupyter notebooks to exist
+    max_concurrent_envs=100,  # increased to allow ghost sessions from Jupyter notebooks to exist
 )
 
 @app.get("/")

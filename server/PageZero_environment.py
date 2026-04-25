@@ -207,32 +207,36 @@ class PageZeroEnvironment(Environment):
         sla_info = self.backend.get_sla_status()
 
         done = (tool == "done") or (self._step_count >= self._max_steps)
-        final_score = None
         hint = None
-
+        canonical_score = None  # set on terminal step; surfaces in obs.final_score
         if done:
-            # 4. Terminal Evaluation
+            # 4. Terminal Evaluation — the judge now decouples the training
+            # reward (uncapped, can be negative) from the canonical score
+            # (clamped for the OpenEnv validator).
             stack_healthy = self.backend.verify_resolution()
-            final_score, hint = self.judge.evaluate_terminal(
+            training_score, canonical_score, hint = self.judge.evaluate_terminal(
                 self._scenario, self._history, stack_healthy, sla_info
             )
-            # Override reward to provide strong terminal signal
-            step_reward += final_score
-            self._cumulative_reward += final_score
+            # Use the raw training score as the terminal reward so failure
+            # produces a real negative gradient.
+            step_reward += training_score
+            self._cumulative_reward += training_score
             self._state.cumulative_reward = self._cumulative_reward
             self._state.is_resolved = stack_healthy
 
             # 5. Feed result back into the curriculum for difficulty progression
             scenario_layer = self._scenario.get("layer", "cross_layer")
-            self.curriculum.record_result(scenario_layer, final_score)
+            self.curriculum.record_result(scenario_layer, canonical_score)
 
             logger.info(
                 f"Episode {self._episode_count} done: "
-                f"score={final_score:.2f}, "
+                f"training={training_score:+.2f}, canonical={canonical_score:.2f}, "
                 f"healthy={stack_healthy}, "
                 f"new_difficulty={self.curriculum.get_difficulty():.2f}"
             )
 
+        # ``final_score`` on the observation stays as the canonical (validator)
+        # score; ``reward`` carries the raw training reward.
         obs = PageZeroObservation(
             tool_output=output,
             active_alerts=[self._scenario.get("alert", "")] if not done else [],
@@ -244,7 +248,7 @@ class PageZeroEnvironment(Environment):
             hint=hint,
             phase_history=[h["tool"] for h in self._history],
             is_done=done,
-            final_score=final_score,
+            final_score=canonical_score,
             reward=step_reward,
             done=done,
         )

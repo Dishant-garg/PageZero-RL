@@ -47,7 +47,7 @@ _FIX_TOOLS = {
     "docker_restart", "rollback_deploy",
 }
 _VERIFY_TOOLS = {"get_service_metrics", "curl_endpoint", "pg_stat_activity", "redis_info"}
-_DOCUMENT_TOOLS = {"diagnose_root_cause", "write_postmortem"}
+_DOCUMENT_TOOLS = {"diagnose_root_cause", "write_postmortem", "done"}
 
 PHASE_ORDER = {
     "triage": 0, "investigate": 1, "diagnose": 2,
@@ -56,10 +56,17 @@ PHASE_ORDER = {
 
 
 def detect_phase(tool: str, history: list) -> str:
+    """Map a tool to its SRE workflow phase.
+
+    `history` is the *prior* history (not including the current tool). Triage
+    tools are always classified as ``triage`` regardless of position; the
+    "first-action triage bonus" is enforced in :func:`phase_score` instead so
+    that workflow ordering after step 1 is still detected correctly.
+    """
     has_fix = any(h.get("tool") in _FIX_TOOLS for h in history)
     if has_fix and tool in _VERIFY_TOOLS:
         return "verify"
-    if tool in _TRIAGE_TOOLS and not history:
+    if tool in _TRIAGE_TOOLS:
         return "triage"
     if tool in _INVESTIGATE_TOOLS:
         return "investigate"
@@ -73,11 +80,22 @@ def detect_phase(tool: str, history: list) -> str:
 
 
 def phase_score(current_phase: str, history: list) -> float:
-    """Reward correct SRE workflow ordering, penalize skipping or going backward."""
+    """Reward correct SRE workflow ordering, penalize skipping or going backward.
+
+    ``history`` may include the current step at index ``-1`` (that is the
+    convention used by :class:`PageZeroEnvironment`). We always strip the last
+    entry so ``past_phases`` represents only the *prior* trajectory; this also
+    makes the "first action" branch reachable on step 1.
+    """
     current_order = PHASE_ORDER.get(current_phase, 1)
-    past_phases = [detect_phase(h.get("tool", ""), history[:i]) for i, h in enumerate(history)]
+    past_history = history[:-1] if history else []
+    past_phases = [
+        detect_phase(h.get("tool", ""), past_history[:i])
+        for i, h in enumerate(past_history)
+    ]
 
     if not past_phases:
+        # First action: triage gets the bonus, anything else gets a penalty.
         return REWARD_TRIAGE_FIRST if current_phase == "triage" else REWARD_WRONG_FIRST
 
     max_past = max([PHASE_ORDER.get(p, 0) for p in past_phases] + [0])
@@ -124,9 +142,13 @@ class LLMJudge:
 
         Gemini judges whether the current tool is the right next action given
         the scenario context and recent history.  Falls back to deterministic
-        phase_score() on any API error so training stays stable.
+        :func:`phase_score` on any API error so the training signal is never
+        a silent zero.
         """
-        deterministic = phase_score(detect_phase(tool, history), history)
+        # ``history`` includes the current step at index -1 (env convention),
+        # so build a *prior* view for the deterministic detector.
+        prior_history = history[:-1] if history else []
+        deterministic = phase_score(detect_phase(tool, prior_history), history)
 
         if not self.client or not scenario:
             return deterministic
@@ -209,24 +231,42 @@ Return ONLY the JSON."""
             data = json.loads(response.text)
             llm_reward = float(data.get("reward", 0.0))
             rationale = data.get("rationale", "")
-            # Return 100% LLM reward, no deterministic fallback
-            print(f"  [Judge] {tool}: LLM={llm_reward:+.2f} | {rationale}")
-            return round(llm_reward, 3)
+            # Blend LLM signal with deterministic phase ordering so the reward
+            # never collapses to 0 on a quirky LLM response and the workflow
+            # bonus/penalty still pulls the policy toward correct ordering.
+            blended = 0.7 * llm_reward + 0.3 * deterministic
+            print(f"  [Judge] {tool}: LLM={llm_reward:+.2f} det={deterministic:+.2f}"
+                  f" → {blended:+.2f} | {rationale}")
+            return round(blended, 3)
         except Exception as e:
-            # Rate limits / network errors → fall back silently to 0.0 (no deterministic)
+            # Rate limits / network errors → fall back to the deterministic
+            # phase signal so the policy still gets a meaningful gradient.
             if "429" not in str(e) and "503" not in str(e):
-                print(f"  [Judge] Step reward LLM error: {e}")
-            return 0.0
+                print(f"  [Judge] Step reward LLM error: {e} (using deterministic={deterministic:+.2f})")
+            return deterministic
 
     def evaluate_terminal(
         self, scenario: dict, history: list, stack_healthy: bool, sla_status: dict
-    ) -> tuple[float, str]:
-        fallback_score, fallback_feedback = self._fallback_evaluate(
+    ) -> tuple[float, float, str]:
+        """Score a finished episode.
+
+        Returns a 3-tuple ``(training_score, canonical_score, feedback)``:
+
+        * ``training_score`` — uncapped value (typically in ``[-1.0, +1.0]``)
+          consumed by the RL reward path. Negative values give the policy a
+          real penalty for failure; previously this was clamped to
+          ``[0.01, 0.99]`` and the failure gradient was lost.
+        * ``canonical_score`` — clamped to ``(0, 1)`` so the OpenEnv validator
+          (which rejects exact ``0`` / ``1``) is happy.
+        * ``feedback`` — short human-readable rationale.
+        """
+        raw_score, fallback_feedback = self._fallback_evaluate(
             scenario, history, stack_healthy, sla_status
         )
+        fallback_canonical = self._canonical_score(raw_score)
 
         if not self.client:
-            return fallback_score, fallback_feedback
+            return raw_score, fallback_canonical, fallback_feedback
 
         # Trim history output for the LLM prompt
         trimmed_history = []
@@ -276,17 +316,30 @@ Provide a score (0.0 = terrible/destructive, 1.0 = perfect) and brief feedback. 
                 )
             )
             data = json.loads(response.text)
-            score = float(data.get("score", fallback_score))
+            llm_canonical = float(data.get("score", fallback_canonical))
             feedback = str(data.get("feedback", fallback_feedback))
-            return self._canonical_score(score), feedback
+            # Map LLM canonical [0,1] → training scale [-1,+1] so failures
+            # carry a real negative gradient. Then blend with the deterministic
+            # raw score (50/50) for stability under noisy LLM judging.
+            llm_training = (llm_canonical - 0.5) * 2.0
+            training = 0.5 * llm_training + 0.5 * raw_score
+            canonical = self._canonical_score(llm_canonical)
+            return training, canonical, feedback
         except Exception as e:
-            print(f"Gemini judge failed: {e}")
-            return fallback_score, fallback_feedback
+            print(f"Gemini judge failed: {e} (using deterministic={raw_score:+.3f})")
+            return raw_score, fallback_canonical, fallback_feedback
 
     def _fallback_evaluate(
         self, scenario: dict, history: list, stack_healthy: bool, sla_status: dict
     ) -> tuple[float, str]:
-        """Programmatic evaluation with efficiency, error, and repetition penalties."""
+        """Programmatic evaluation with efficiency, error, and repetition penalties.
+
+        Returns ``(raw_score, feedback)``. The raw score is intentionally
+        *uncapped* — it is used as the training signal so that a complete
+        failure produces a negative reward and a good run a positive one.
+        :meth:`_canonical_score` is only applied later when reporting to the
+        OpenEnv validator.
+        """
         tools_used = [h["tool"] for h in history]
         num_steps = len(history)
         max_steps = DEFAULT_MAX_STEPS
@@ -371,5 +424,7 @@ Provide a score (0.0 = terrible/destructive, 1.0 = perfect) and brief feedback. 
 
         profile_id = profile.get('profile_id', 'default')
         feedback = f"[grader={profile_id}] " + " ".join(feedback_parts)
-        return self._canonical_score(score), feedback
+        # Return the *raw* score (no canonical clamp here). The caller is
+        # responsible for canonicalizing it for the validator if needed.
+        return float(score), feedback
 
