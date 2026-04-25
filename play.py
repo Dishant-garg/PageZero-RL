@@ -84,6 +84,7 @@ TOOLS_SPEC = {
     "check_disk_usage":   {"required": []},
     # Resolution
     "diagnose_root_cause":{"required": ["root_cause"]},
+    "write_postmortem":   {"required": ["root_cause", "impact", "fix_applied", "prevention"]},
     "done":               {"required": []},
 }
 
@@ -101,7 +102,7 @@ SRE Workflow (follow in order):
   3. DIAGNOSE:    pg_explain_analyze, pg_stat_statements, get_recent_deploys
   4. FIX:         pg_cancel_query, pg_create_index, pg_vacuum, redis_flush_db, docker_restart, rollback_deploy
   5. VERIFY:      curl_endpoint, pg_stat_activity, redis_info, get_service_metrics
-  6. DOCUMENT:    diagnose_root_cause → done
+  6. DOCUMENT:    diagnose_root_cause → write_postmortem → done
 
 TOOL ARGUMENT RULES (follow exactly or you will get errors):
   - curl_endpoint:        REQUIRES {"url": "http://localhost:5001/health"}
@@ -115,6 +116,7 @@ TOOL ARGUMENT RULES (follow exactly or you will get errors):
   - redis_get_key:        REQUIRES {"key": "some_key"}
   - search_logs:          REQUIRES {"pattern": "error_text"}
   - diagnose_root_cause:  REQUIRES {"root_cause": "one-sentence summary"}
+  - write_postmortem:     REQUIRES {"root_cause": "...", "impact": "...", "fix_applied": "...", "prevention": "..."}
 
 CRITICAL RULES:
   - If a tool returns "ERROR: missing ...", you MUST fix the args or switch tools.
@@ -131,8 +133,8 @@ ANTI-PATTERNS THAT CAUSE ERRORS:
   - ❌ Calling redis_flush_db as first action — reckless, investigate first
 
 GOOD PATTERNS:
-  - ✅ check_alerts → redis_info → redis_keys → redis_flush_db → redis_info → diagnose_root_cause → done
-  - ✅ check_alerts → pg_stat_activity → pg_locks → pg_cancel_query → curl_endpoint → done
+  - ✅ check_alerts → redis_info → redis_keys → redis_flush_db → redis_info → diagnose_root_cause → write_postmortem → done
+  - ✅ check_alerts → pg_stat_activity → pg_locks → pg_cancel_query → curl_endpoint → write_postmortem → done
   - ✅ Always read error output carefully and fix arguments before retrying
 
 Output format: {"tool": "<name>", "args": {...}}
@@ -305,7 +307,7 @@ def _build_recovery_hint(
         if error_count >= 2:
             return "Multiple recent errors. Switch to a completely different tool class (explore vs fix vs verify)."
 
-    return "Follow the SRE workflow: Triage → Investigate → Diagnose → Fix → Verify → Document."
+    return "Follow the SRE workflow: Triage → Investigate → Diagnose → Fix → Verify → Document (Postmortem)."
 
 
 def _build_user_prompt(

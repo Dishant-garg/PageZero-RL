@@ -41,6 +41,7 @@ ToolName = Literal[
     
     # Resolution
     "diagnose_root_cause", 
+    "write_postmortem",
     "done"
 ]
 

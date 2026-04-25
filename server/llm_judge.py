@@ -47,7 +47,7 @@ _FIX_TOOLS = {
     "docker_restart", "rollback_deploy",
 }
 _VERIFY_TOOLS = {"get_service_metrics", "curl_endpoint", "pg_stat_activity", "redis_info"}
-_DOCUMENT_TOOLS = {"diagnose_root_cause"}
+_DOCUMENT_TOOLS = {"diagnose_root_cause", "write_postmortem"}
 
 PHASE_ORDER = {
     "triage": 0, "investigate": 1, "diagnose": 2,
@@ -170,7 +170,7 @@ SRE WORKFLOW PHASES (in order):
   3. diagnose — pg_explain_analyze, pg_stat_statements, get_recent_deploys
   4. fix      — pg_cancel_query, pg_create_index, pg_vacuum, redis_flush_db, docker_restart, rollback_deploy
   5. verify   — curl_endpoint, pg_stat_activity, redis_info, get_service_metrics
-  6. document — diagnose_root_cause → done
+  6. document — diagnose_root_cause → write_postmortem → done
 
 PRIOR HISTORY (last {len(recent_summary)} steps before now):
 {json.dumps(recent_summary, indent=2)}
@@ -332,7 +332,7 @@ Provide a score (0.0 = terrible/destructive, 1.0 = perfect) and brief feedback. 
 
         # ── 4. Root cause bonus ──
         for h in history:
-            if h["tool"] == "diagnose_root_cause":
+            if h["tool"] in ["diagnose_root_cause", "write_postmortem"]:
                 score += root_cause_bonus
                 feedback_parts.append("Good logging of root cause.")
                 break

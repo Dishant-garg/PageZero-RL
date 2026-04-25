@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.egg-info/
+.git/
+.env
+validation_output.log
+docker_build.log

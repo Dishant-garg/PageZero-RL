@@ -143,6 +143,12 @@ class Executor:
                 if not cause:
                     return "ERROR: missing 'root_cause'"
                 return f"Root cause logged: {cause}"
+            elif tool_name == "write_postmortem":
+                required = ["root_cause", "impact", "fix_applied", "prevention"]
+                missing = [r for r in required if not args.get(r)]
+                if missing:
+                    return f"ERROR: missing {', '.join(missing)}"
+                return f"Post-mortem logged successfully. Root cause: {args.get('root_cause')}"
             elif tool_name == "done":
                 return "Investigation concluded."
 

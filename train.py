@@ -87,7 +87,8 @@ Follow this workflow:
 2) Investigate app/db/cache signals.
 3) Apply precise fixes.
 4) Verify recovery.
-5) Call done when fully restored.
+5) Write a postmortem using write_postmortem tool.
+6) Call done when fully restored.
 
 Prefer precise arguments for tools requiring params.
 """
@@ -485,6 +486,25 @@ class PageZeroToolEnv:
             Acknowledgement from environment.
         """
         return self._run_tool("diagnose_root_cause", {"root_cause": root_cause})
+
+    def write_postmortem(self, root_cause: str, impact: str, fix_applied: str, prevention: str) -> str:
+        """Record a comprehensive post-mortem.
+
+        Args:
+            root_cause: The underlying cause.
+            impact: Scope of disruption.
+            fix_applied: Steps taken to fix.
+            prevention: How to prevent.
+
+        Returns:
+            Acknowledgement from environment.
+        """
+        return self._run_tool("write_postmortem", {
+            "root_cause": root_cause,
+            "impact": impact,
+            "fix_applied": fix_applied,
+            "prevention": prevention
+        })
 
     def done(self) -> str:
         """Mark incident handling as complete.
