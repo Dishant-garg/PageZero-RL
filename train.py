@@ -81,7 +81,11 @@ logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """You are a Staff SRE on-call. Diagnose and fix the cascading incident across the Application, PostgreSQL, and Redis cache.
 
-Use tools to investigate and remediate.
+To use a tool, you MUST use this exact format:
+<tool_call>
+{"name": "check_alerts", "arguments": {}}
+</tool_call>
+
 Follow this workflow:
 1) Triage alerts and service health.
 2) Investigate app/db/cache signals.
