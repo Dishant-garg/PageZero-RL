@@ -62,6 +62,12 @@ WORKDIR /app
 # Copy the virtual environment from builder
 COPY --from=builder /app/env/.venv /app/.venv
 
+# Runtime deps for remote-VM mode (HF Spaces often sets VM_HOST)
+# - openssh-client: provides the `ssh` binary used by `server/stack_backend.py`
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends openssh-client && \
+    rm -rf /var/lib/apt/lists/*
+
 # Copy the environment code
 COPY --from=builder /app/env /app/env
 
