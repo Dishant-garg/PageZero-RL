@@ -36,7 +36,6 @@ os.environ.setdefault("TRL_EXPERIMENTAL_SILENCE", "1")
 from datasets import Dataset
 from transformers import AutoTokenizer
 
-from peft import LoraConfig
 from trl import GRPOConfig, GRPOTrainer
 from trl.experimental.openenv import generate_rollout_completions
 
@@ -618,6 +617,14 @@ def main() -> None:
         }
 
     # ---- LoRA config ----
+    try:
+        from peft import LoraConfig
+    except Exception as e:
+        raise ImportError(
+            "peft is required to run train.py with LoRA. "
+            "Install a compatible peft/transformers combination."
+        ) from e
+
     peft_config = LoraConfig(
         r=args.lora_r,
         lora_alpha=args.lora_alpha,

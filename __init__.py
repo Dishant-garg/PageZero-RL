@@ -4,13 +4,13 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-"""Pagezero Environment."""
+"""PageZero Environment package exports."""
 
-from .client import PagezeroEnv
-from .models import PagezeroAction, PagezeroObservation
+from .client import PageZeroEnvClient
+from .models import PageZeroAction, PageZeroObservation
 
 __all__ = [
-    "PagezeroAction",
-    "PagezeroObservation",
-    "PagezeroEnv",
+    "PageZeroEnvClient",
+    "PageZeroAction",
+    "PageZeroObservation",
 ]
