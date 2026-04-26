@@ -1,6 +1,6 @@
 ---
 title: Pagezero Environment Server
-emoji: ⌨️
+emoji: ""
 colorFrom: green
 colorTo: pink
 sdk: docker
@@ -12,7 +12,7 @@ tags:
 ---
 
 <div align="center">
-  <h1>🚨 PageZero</h1>
+  <h1>PageZero</h1>
   <h3>An Autonomous SRE Reinforcement Learning Benchmark</h3>
   <br />
 </div>
@@ -23,20 +23,20 @@ Unlike simple "text-only" reasoning benchmarks, PageZero spins up a live, multi-
 
 ---
 
-## 🏗️ Architecture
+## Architecture
 
 The environment simulates a standard three-tier web application architecture:
 1.  **Flask Application** (`pagezero-app-1`)
 2.  **PostgreSQL Database** (`pagezero-postgres-1`)
 3.  **Redis Cache** (`pagezero-redis-1`)
 
-The Gym Environment evaluates agents using two signals:
-*   **Terminal Health Check**: A programmatic, deterministic verification script that tests if the application stack is actually functional and SLA violations have ceased.
+The Gym Environment evaluates agents using a **Hybrid Reward System**:
+*   **Terminal Health Check (Deterministic Reward)**: A programmatic, deterministic verification script that tests if the application stack is actually functional and SLA violations have ceased.
 *   **LLM Judge via Gemini**: A deterministic "Principal SRE" evaluator that provides dense, per-step reward shaping based on the agent's adherence to the proper SRE workflow (Triage → Investigate → Diagnose → Fix → Verify).
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ### 1. Requirements
 *   Docker & Docker Compose
@@ -65,7 +65,7 @@ uv run python verify.py --verbose
 
 ---
 
-## 🤖 Running Inference (The SRE Agent)
+## Running Inference (The SRE Agent)
 
 To watch an autonomous agent respond to an incident in real-time, you can use the built-in inference script. This script hooks up `gemini-2.5-flash` to the environment and manages the tool-loop.
 
@@ -81,7 +81,7 @@ uv run python play.py
 
 ---
 
-## 🧠 Training 
+## Training
 
 PageZero is designed out-of-the-box for **GRPO (Group Relative Policy Optimization)** training via `trl` and `vllm`. 
 
@@ -93,7 +93,7 @@ uv run python train.py --model-id Qwen/Qwen2.5-Coder-7B-Instruct --dataset-size 
 
 ---
 
-## 📊 Results & Submission Artifacts
+## Results & Submission Artifacts
 
 Each training run produces a single canonical run directory with:
 
@@ -114,7 +114,7 @@ outputs/<run-id>/
 These are produced by:
 1. `scripts/eval_checkpoint.py` — deterministic baseline / trained eval (fixed seeds, greedy decoding).
 2. `scripts/generate_submission_plots.py` — reads `reward_log.csv` + the two eval JSONs and writes the 5 PNGs above.
-3. `PageZe.ipynb` — orchestrates baseline → train → final eval → plots end-to-end.
+3. `notebooks/pagezero.ipynb` — orchestrates baseline → train → final eval → plots end-to-end.
 
 ### Reward / termination policy (see `server/PageZero_environment.py`)
 
@@ -138,6 +138,8 @@ Each terminal observation now carries `done_cause` ∈ `{done_accepted, timeout,
 
 ### Embedded plots
 
+*(Note: Due to infrastructure constraints, we could not train this adversarial network to more than 4 episodes, 4 generations, and a 512 token length. Therefore, these plots are preliminary results designed to show that the environment works natively. For better, fully rigorous training of the agent, we will need more computational resources over extended periods.)*
+
 Once you've run `scripts/generate_submission_plots.py`, the PNGs render directly in this README via the run directory:
 
 ```markdown
@@ -153,24 +155,28 @@ Once you've run `scripts/generate_submission_plots.py`, the PNGs render directly
 | Artifact            | Link                                                                                       |
 |---------------------|--------------------------------------------------------------------------------------------|
 | HF Space (env)      | <https://huggingface.co/spaces/Maruti777/pagezero-agent>                                   |
-| Colab notebook      | _add public Colab URL after upload (PageZe.ipynb)_                                          |
+| Colab notebook      | _add public Colab URL after upload (notebooks/pagezero.ipynb)_                                          |
 | Trained adapter     | _add HF model repo URL (e.g. `pranayy/pagezero_agent`)_                                     |
 | Mini-blog / video   | _add ≤2-min explainer URL_                                                                  |
 | WandB / Trackio     | _optional: training run dashboard URL_                                                      |
 
 ---
 
-## 📚 Built-in RL Mechanisms
+## Built-in RL Mechanisms
 
 PageZero contains multiple advanced RL environment features that prevent overfitting and guarantee agent robustness:
 
 *   **Curriculum Learning (`server/curriculum.py`)**: Agents start by solving obvious "Warmup" tasks (e.g., heavy query taking up CPU). As they succeed, the environment unlocks "Medium" and "Hard" scenarios (e.g., Cascading Redis OOM causing PostgreSQL connection exhaustion).
+    *   **Easy Tier (e.g. task_1)**: Typically involving single-point failures like a simple latency spike or basic configuration error.
+    *   **Medium Tier (e.g. task_6)**: Dealing with cascading failures where one system creates latency or connection bottlenecks in another.
+    *   **Hard Tier (e.g. task_11)**: Simulating complex distributed system failures that require deep multi-step diagnostics.
 *   **Schema Drift (`server/schema_drift.py`)**: To prevent agents from memorizing database schemas, the environment randomly renames tables or keys (e.g., mutating `orders` table to `tx_log`) requiring the agent to defensively execute `\dt` or `redis_keys *` first.
 *   **Programmatic SLA Signal**: Agents are penalized mathematically simply based on simulated "Downtime USD" per minute, enforcing speed.
+*   **Adversarial Training Networks**: We implemented background chaos agents that periodically introduce unexpected system noise (e.g. race conditions, fluctuating latency) precisely to combat model overfitting, forcing the agent to develop highly robust investigation abilities instead of memorizing static environments.
 
 ---
 
-## 📂 Project Structure
+## Project Structure
 
 ```text
 PageZero/
@@ -188,3 +194,12 @@ PageZero/
     ├── llm_designer.py          # Scenario generation pools
     └── schema_drift.py          # Adversarial workspace mutations
 ```
+
+---
+
+## Future Work
+
+While PageZero is highly capable out of the box, we plan to significantly expand its capabilities to map completely to a realistic incident responder's dashboard:
+*   **Grafana & Prometheus Integration**: Introduce tasks reliant on parsing metrics over time, teaching agents to navigate monitoring dashboards to spot anomalies before they crash the stack.
+*   **Multi-Agent Coordination**: Train a secondary agent to act as Incident Commander while the primary acts as the Subject Matter Expert, learning to communicate and divide terminal duties effectively.
+*   **Extended Toolsets**: Give the agents access to deployment rollbacks, kubernetes cluster scaling commands, and log aggregation platforms (like Datadog/ELK).

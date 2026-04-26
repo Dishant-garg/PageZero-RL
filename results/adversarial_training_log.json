@@ -1,0 +1,315 @@
+{
+    "project": "pagezero-rl",
+    "run_name": "pagezero-colab-2026-04-26_07-31-18",
+    "stages": [
+        {
+            "stage": "easy",
+            "rounds": [
+                {
+                    "round": 1,
+                    "task_id": "task_1",
+                    "rationale": "heuristic: maximize unresolved+downtime likelihood",
+                    "target_failure_mode": "latency/cascading-failure",
+                    "episodes_this_round": 4,
+                    "total_episodes": 4,
+                    "avg_red_reward": 1.260,
+                    "blue_success_rate": 0.00,
+                    "avg_downtime_m": 0.0,
+                    "rollouts": [
+                        {
+                            "judgments": [
+                                "DIAG pg_stat_activity r=-0.300",
+                                "DIAG check_alerts r=+0.200",
+                                "DIAG pg_stat_activity r=+0.050",
+                                "DIAG pg_stat_activity r=-0.350"
+                            ],
+                            "reward_audit": {
+                                "mean": 0.025,
+                                "std": 0.450,
+                                "min": -0.650,
+                                "max": 0.250
+                            }
+                        },
+                        {
+                            "judgments": [
+                                "DIAG pg_stat_activity r=-0.300",
+                                "FIX pg_cancel_query r=-0.450",
+                                "DIAG pg_stat_activity r=+0.050"
+                            ],
+                            "reward_audit": {
+                                "mean": -0.225,
+                                "std": 0.550,
+                                "min": -0.750,
+                                "max": 0.250
+                            }
+                        },
+                        {
+                            "judgments": [
+                                "DIAG check_alerts r=+0.200",
+                                "DIAG pg_stat_activity r=-0.300",
+                                "DIAG pg_stat_activity r=+0.050",
+                                "DIAG pg_stat_activity r=-0.350"
+                            ],
+                            "reward_audit": {
+                                "mean": 0.025,
+                                "std": 0.450,
+                                "min": -0.650,
+                                "max": 0.250
+                            }
+                        },
+                        {
+                            "reward_audit": {
+                                "mean": -0.037,
+                                "std": 0.425,
+                                "min": -0.650,
+                                "max": 0.250
+                            }
+                        }
+                    ]
+                },
+                {
+                    "round": 2,
+                    "task_id": "task_1",
+                    "rationale": "heuristic: maximize unresolved+downtime likelihood",
+                    "target_failure_mode": "latency/cascading-failure",
+                    "episodes_this_round": 4,
+                    "total_episodes": 8,
+                    "avg_red_reward": 1.260,
+                    "blue_success_rate": 0.00,
+                    "avg_downtime_m": 0.0,
+                    "rollouts": [
+                        {
+                            "reward_audit": {
+                                "mean": 0.025,
+                                "std": 0.450,
+                                "min": -0.650,
+                                "max": 0.250
+                            }
+                        },
+                        {
+                            "reward_audit": {
+                                "mean": -0.225,
+                                "std": 0.550,
+                                "min": -0.750,
+                                "max": 0.250
+                            }
+                        },
+                        {
+                            "reward_audit": {
+                                "mean": 0.250,
+                                "std": 0.000,
+                                "min": 0.250,
+                                "max": 0.250
+                            }
+                        },
+                        {
+                            "reward_audit": {
+                                "mean": 0.287,
+                                "std": 0.075,
+                                "min": 0.250,
+                                "max": 0.400
+                            }
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "stage": "medium",
+            "rounds": [
+                {
+                    "round": 1,
+                    "task_id": "task_6",
+                    "rationale": "heuristic: maximize unresolved+downtime likelihood",
+                    "target_failure_mode": "latency/cascading-failure",
+                    "episodes_this_round": 4,
+                    "total_episodes": 4,
+                    "avg_red_reward": 1.260,
+                    "blue_success_rate": 0.00,
+                    "avg_downtime_m": 0.0,
+                    "rollouts": [
+                        {
+                            "judgments": [
+                                "DIAG check_disk_usage r=-0.150",
+                                "DIAG pg_stat_activity r=-0.050"
+                            ],
+                            "reward_audit": {
+                                "mean": -0.200,
+                                "std": 0.000,
+                                "min": -0.200,
+                                "max": -0.200
+                            }
+                        },
+                        {
+                            "reward_audit": {
+                                "mean": -0.200,
+                                "std": 0.000,
+                                "min": -0.200,
+                                "max": -0.200
+                            }
+                        },
+                        {
+                            "reward_audit": {
+                                "mean": -0.200,
+                                "std": 0.000,
+                                "min": -0.200,
+                                "max": -0.200
+                            }
+                        },
+                        {
+                            "reward_audit": {
+                                "mean": -0.200,
+                                "std": 0.000,
+                                "min": -0.200,
+                                "max": -0.200
+                            }
+                        }
+                    ]
+                },
+                {
+                    "round": 2,
+                    "task_id": "task_6",
+                    "rationale": "heuristic: maximize unresolved+downtime likelihood",
+                    "target_failure_mode": "latency/cascading-failure",
+                    "episodes_this_round": 4,
+                    "total_episodes": 8,
+                    "avg_red_reward": 1.260,
+                    "blue_success_rate": 0.00,
+                    "avg_downtime_m": 0.0,
+                    "rollouts": [
+                        {
+                            "reward_audit": {
+                                "mean": -0.200,
+                                "std": 0.000,
+                                "min": -0.200,
+                                "max": -0.200
+                            }
+                        },
+                        {
+                            "reward_audit": {
+                                "mean": -0.200,
+                                "std": 0.000,
+                                "min": -0.200,
+                                "max": -0.200
+                            }
+                        },
+                        {
+                            "reward_audit": {
+                                "mean": -0.200,
+                                "std": 0.000,
+                                "min": -0.200,
+                                "max": -0.200
+                            }
+                        },
+                        {
+                            "reward_audit": {
+                                "mean": -0.200,
+                                "std": 0.000,
+                                "min": -0.200,
+                                "max": -0.200
+                            }
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "stage": "hard",
+            "rounds": [
+                {
+                    "round": 1,
+                    "task_id": "task_11",
+                    "rationale": "heuristic: maximize unresolved+downtime likelihood",
+                    "target_failure_mode": "latency/cascading-failure",
+                    "episodes_this_round": 4,
+                    "total_episodes": 4,
+                    "avg_red_reward": 1.260,
+                    "blue_success_rate": 0.00,
+                    "avg_downtime_m": 0.0,
+                    "rollouts": [
+                        {
+                            "judgments": [
+                                "DIAG check_alerts r=+0.200",
+                                "DIAG check_disk_usage r=+0.200",
+                                "DIAG pg_stat_activity r=+0.050"
+                            ],
+                            "reward_audit": {
+                                "mean": 0.287,
+                                "std": 0.075,
+                                "min": 0.250,
+                                "max": 0.400
+                            }
+                        },
+                        {
+                            "reward_audit": {
+                                "mean": 0.125,
+                                "std": 0.144,
+                                "min": 0.000,
+                                "max": 0.250
+                            }
+                        },
+                        {
+                            "reward_audit": {
+                                "mean": 0.225,
+                                "std": 0.166,
+                                "min": 0.000,
+                                "max": 0.400
+                            }
+                        }
+                    ]
+                },
+                {
+                    "round": 2,
+                    "task_id": "task_11",
+                    "rationale": "heuristic: maximize unresolved+downtime likelihood",
+                    "target_failure_mode": "latency/cascading-failure",
+                    "episodes_this_round": 4,
+                    "total_episodes": 8,
+                    "avg_red_reward": 1.260,
+                    "blue_success_rate": 0.00,
+                    "avg_downtime_m": 0.0,
+                    "rollouts": [
+                        {
+                            "reward_audit": {
+                                "mean": 0.263,
+                                "std": 0.189,
+                                "min": 0.000,
+                                "max": 0.400
+                            }
+                        },
+                        {
+                            "reward_audit": {
+                                "mean": 0.125,
+                                "std": 0.144,
+                                "min": 0.000,
+                                "max": 0.250
+                            }
+                        },
+                        {
+                            "reward_audit": {
+                                "mean": 0.250,
+                                "std": 0.000,
+                                "min": 0.250,
+                                "max": 0.250
+                            }
+                        },
+                        {
+                            "reward_audit": {
+                                "mean": 0.225,
+                                "std": 0.166,
+                                "min": 0.000,
+                                "max": 0.400
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
+    ],
+    "final_audit": {
+        "easy": "DET_ONLY_NO_GEMINI",
+        "medium": "DET_ONLY_NO_GEMINI",
+        "hard": "DET_ONLY_NO_GEMINI",
+        "max_bucket_total_mismatch": 0.0000
+    }
+}

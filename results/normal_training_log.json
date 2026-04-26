@@ -1,0 +1,313 @@
+{
+    "project": "pagezero-rl",
+    "run_name": "pagezero-colab-2026-04-26_03-50-05",
+    "model": "Qwen/Qwen3-0.6B",
+    "hyperparameters": {
+        "kl_beta": 0.01,
+        "num_generations": 4,
+        "temperature": 0.6,
+        "top_p": 0.9,
+        "max_completion_length": 1024,
+        "mask_truncated": false,
+        "enable_thinking": false
+    },
+    "reward_funcs": [
+        "reward_total_audited"
+    ],
+    "curriculum_stages": [
+        "easy",
+        "medium",
+        "hard"
+    ],
+    "training_summary": {
+        "stage": "easy",
+        "episodes_budget": 24,
+        "tasks_in_pool": [
+            "task_1",
+            "task_2",
+            "task_3",
+            "task_4",
+            "task_5"
+        ],
+        "results": {
+            "episodes": 96,
+            "mean_reward": -0.103,
+            "normalized_reward": -0.028,
+            "best_reward": 3.456,
+            "resolved_rate_percent": 4,
+            "avg_steps": 2.7,
+            "tier_after": "warmup"
+        },
+        "rollouts_per_episode": [
+            {
+                "generation": 1,
+                "task": "task_2",
+                "judgments": [
+                    "DIAG check_alerts r=+0.130",
+                    "DIAG diagnose_root_cause r=-0.500",
+                    "DIAG pg_stat_activity r=+0.200",
+                    "DIAG pg_stat_activity r=+0.095",
+                    "FIX pg_cancel_query r=-0.160",
+                    "DIAG pg_stat_activity r=-0.485"
+                ],
+                "reward_audit": {
+                    "mean": -0.250,
+                    "std": 0.547,
+                    "min": -0.890,
+                    "max": 0.240
+                }
+            },
+            {
+                "generation": 2,
+                "task": "task_4",
+                "judgments": [
+                    "DIAG diagnose_root_cause r=-0.500",
+                    "DIAG check_disk_usage r=-0.115",
+                    "DIAG pg_stat_activity r=-0.115"
+                ],
+                "reward_audit": {
+                    "mean": -0.823,
+                    "std": 0.150,
+                    "min": -0.950,
+                    "max": -0.660
+                }
+            },
+            {
+                "generation": 3,
+                "task": "task_1",
+                "judgments": [
+                    "DIAG pg_stat_activity r=+0.095",
+                    "DIAG check_alerts r=+0.130",
+                    "FIX pg_cancel_query r=+2.703 term=+0.960",
+                    "DIAG done r=+0.412 term=+0.460"
+                ],
+                "reward_audit": {
+                    "mean": 0.649,
+                    "std": 1.762,
+                    "min": -0.815,
+                    "max": 3.211
+                }
+            },
+            {
+                "generation": 4,
+                "task": "task_1",
+                "judgments": [
+                    "DIAG check_alerts r=+0.200",
+                    "FIX pg_cancel_query r=+2.703 term=+0.760",
+                    "DIAG done r=+0.658 term=+0.960"
+                ],
+                "reward_audit": {
+                    "mean": 1.040,
+                    "std": 1.612,
+                    "min": 0.170,
+                    "max": 3.456
+                }
+            },
+            {
+                "generation": 5,
+                "task": "task_3",
+                "judgments": [
+                    "DIAG redis_info r=+0.095",
+                    "DIAG check_disk_usage r=-0.115",
+                    "DIAG diagnose_root_cause r=-0.500"
+                ],
+                "reward_audit": {
+                    "mean": -0.186,
+                    "std": 0.510,
+                    "min": -0.950,
+                    "max": 0.095
+                }
+            },
+            {
+                "generation": 6,
+                "task": "task_5",
+                "reward_audit": {
+                    "mean": 0.135,
+                    "std": 0.040,
+                    "min": 0.100,
+                    "max": 0.170
+                }
+            },
+            {
+                "generation": 7,
+                "task": "task_1",
+                "reward_audit": {
+                    "mean": 0.244,
+                    "std": 0.166,
+                    "min": 0.100,
+                    "max": 0.395
+                }
+            },
+            {
+                "generation": 8,
+                "task": "task_5",
+                "reward_audit": {
+                    "mean": 0.153,
+                    "std": 0.035,
+                    "min": 0.100,
+                    "max": 0.170
+                }
+            },
+            {
+                "generation": 9,
+                "task": "task_4",
+                "reward_audit": {
+                    "mean": -0.579,
+                    "std": 0.461,
+                    "min": -0.950,
+                    "max": 0.095
+                }
+            },
+            {
+                "generation": 10,
+                "task": "task_5",
+                "reward_audit": {
+                    "mean": 0.080,
+                    "std": 0.093,
+                    "min": -0.050,
+                    "max": 0.170
+                }
+            },
+            {
+                "generation": 11,
+                "task": "task_2",
+                "reward_audit": {
+                    "mean": -0.446,
+                    "std": 0.469,
+                    "min": -0.890,
+                    "max": 0.215
+                }
+            },
+            {
+                "generation": 12,
+                "task": "task_4",
+                "reward_audit": {
+                    "mean": -0.282,
+                    "std": 0.440,
+                    "min": -0.730,
+                    "max": 0.095
+                }
+            },
+            {
+                "generation": 13,
+                "task": "task_3",
+                "reward_audit": {
+                    "mean": 0.075,
+                    "std": 0.023,
+                    "min": 0.055,
+                    "max": 0.095
+                }
+            },
+            {
+                "generation": 14,
+                "task": "task_3",
+                "reward_audit": {
+                    "mean": 0.051,
+                    "std": 0.064,
+                    "min": -0.040,
+                    "max": 0.095
+                }
+            },
+            {
+                "generation": 15,
+                "task": "task_1",
+                "reward_audit": {
+                    "mean": -0.297,
+                    "std": 0.540,
+                    "min": -0.765,
+                    "max": 0.170
+                }
+            },
+            {
+                "generation": 16,
+                "task": "task_2",
+                "reward_audit": {
+                    "mean": -0.316,
+                    "std": 0.663,
+                    "min": -0.890,
+                    "max": 0.276
+                }
+            },
+            {
+                "generation": 17,
+                "task": "task_4",
+                "reward_audit": {
+                    "mean": -0.785,
+                    "std": 0.110,
+                    "min": -0.950,
+                    "max": -0.730
+                }
+            },
+            {
+                "generation": 18,
+                "task": "task_1",
+                "reward_audit": {
+                    "mean": -0.555,
+                    "std": 0.297,
+                    "min": -0.765,
+                    "max": -0.135
+                }
+            },
+            {
+                "generation": 19,
+                "task": "task_1",
+                "reward_audit": {
+                    "mean": -0.064,
+                    "std": 0.471,
+                    "min": -0.765,
+                    "max": 0.240
+                }
+            },
+            {
+                "generation": 20,
+                "task": "task_1",
+                "reward_audit": {
+                    "mean": 0.076,
+                    "std": 0.156,
+                    "min": -0.135,
+                    "max": 0.240
+                }
+            },
+            {
+                "generation": 21,
+                "task": "task_2",
+                "reward_audit": {
+                    "mean": -0.723,
+                    "std": 0.236,
+                    "min": -0.960,
+                    "max": -0.520
+                }
+            },
+            {
+                "generation": 22,
+                "task": "task_3",
+                "reward_audit": {
+                    "mean": 0.075,
+                    "std": 0.023,
+                    "min": 0.055,
+                    "max": 0.095
+                }
+            },
+            {
+                "generation": 23,
+                "task": "task_5",
+                "reward_audit": {
+                    "mean": 0.100,
+                    "std": 0.000,
+                    "min": 0.100,
+                    "max": 0.100
+                }
+            },
+            {
+                "generation": 24,
+                "task": "task_1",
+                "reward_audit": {
+                    "mean": 0.163,
+                    "std": 0.201,
+                    "min": -0.135,
+                    "max": 0.285
+                }
+            }
+        ]
+    }
+}

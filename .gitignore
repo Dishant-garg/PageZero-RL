@@ -29,3 +29,5 @@ outputs/
 # OS
 .DS_Store
 assets/*.png
+
+episode_logs/
