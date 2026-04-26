@@ -352,7 +352,9 @@ REWARD_LOG_HEADER = [
     "episode", "stage", "task_id", "tier", "total_reward",
     "diagnosis_reward", "fix_reward", "terminal_reward",
     "num_steps", "is_resolved", "stack_healthy",
-    "last_sla_status", "wallclock_s", "timestamp",
+    "last_sla_status", "wallclock_s",
+    "done_cause", "diagnose_count",
+    "timestamp",
 ]
 
 
@@ -399,6 +401,8 @@ class RewardLogger:
                     "" if payload.get("stack_healthy") is None else int(bool(payload["stack_healthy"])),
                     payload.get("last_sla_status", ""),
                     round(float(payload.get("wallclock_s", 0.0)), 2),
+                    payload.get("done_cause", ""),
+                    int(payload.get("diagnose_count", 0)),
                     payload["timestamp"],
                 ])
 
@@ -451,6 +455,14 @@ class PageZeroToolEnv:
     STRICT_EPISODE_TASK_BINDING: bool = True
     NO_TOOL_PENALTY: float = -0.5
 
+    # Class-level defaults for termination diagnostics so that
+    # ``trajectory_payload()`` / ``maybe_log_and_record()`` never raise
+    # AttributeError if a TRL rollout path constructs / re-uses an env
+    # instance through a route that skips the latest ``__init__`` body
+    # (e.g. cached imports in the notebook kernel).
+    done_cause: str = ""
+    diagnose_count: int = 0
+
     _instances: List["PageZeroToolEnv"] = []
 
     def __init__(self) -> None:
@@ -474,6 +486,8 @@ class PageZeroToolEnv:
         self._last_command: str = ""
         self._last_output_snippet: str = ""
         self._last_reward: float = 0.0
+        self.done_cause: str = ""
+        self.diagnose_count: int = 0
         self.__class__._instances.append(self)
 
     # ---- Curriculum hooks (set by the training driver before each stage) ----
@@ -567,6 +581,8 @@ class PageZeroToolEnv:
         self._last_command = ""
         self._last_output_snippet = ""
         self._last_reward = 0.0
+        self.done_cause = ""
+        self.diagnose_count = 0
         return self._format_observation(result.observation, reward=0.0)
 
     def _format_observation(self, obs, reward: float) -> str:
@@ -676,6 +692,20 @@ class PageZeroToolEnv:
         self._last_output_snippet = snippet
         self._last_reward = reward
 
+        # Track running diagnose count and capture done_cause on terminal step.
+        # Use getattr-with-default + setattr writes so an env instance that was
+        # constructed before the latest module reload still works.
+        try:
+            obs_diag_count = int(getattr(obs, "diagnose_count", 0) or 0)
+        except Exception:
+            obs_diag_count = 0
+        cur_diag = int(getattr(self, "diagnose_count", 0) or 0)
+        if obs_diag_count > cur_diag:
+            cur_diag = obs_diag_count
+        elif tool == "diagnose_root_cause":
+            cur_diag += 1
+        self.diagnose_count = cur_diag
+
         self.trajectory.append({
             "step": len(self.trajectory) + 1,
             "tool": tool,
@@ -691,12 +721,15 @@ class PageZeroToolEnv:
             "stack_healthy": getattr(obs, "stack_healthy", None),
             "judge_feedback": str(feedback or "")[:300],
             "output_snippet": snippet,
+            "done_cause": getattr(obs, "done_cause", None) if was_done else None,
+            "diagnose_count": int(self.diagnose_count),
         })
 
         if was_done:
             self.end_ts = datetime.now().timestamp()
             self.stack_healthy = getattr(obs, "stack_healthy", None)
             self.is_resolved = bool(self.stack_healthy)
+            self.done_cause = str(getattr(obs, "done_cause", "") or "")
 
         return self._format_observation(obs, reward=reward)
 
@@ -727,6 +760,8 @@ class PageZeroToolEnv:
             "terminal_reward": float(self.terminal_reward),
             "last_sla_status": self.last_sla_status,
             "wallclock_s": (self.end_ts or datetime.now().timestamp()) - self.start_ts,
+            "done_cause": str(getattr(self, "done_cause", "") or ""),
+            "diagnose_count": int(getattr(self, "diagnose_count", 0) or 0),
             "tool_sequence": [t["tool"] for t in self.trajectory],
             "trajectory": self.trajectory,
         }

@@ -56,6 +56,7 @@ def _minimal_env_for_step_tests():
     env._call_counts = {}
     env._used_diagnose_root_cause = False
     env._used_write_postmortem = False
+    env._diagnose_root_cause_count = 0
     env._state = MagicMock()
     env._state.difficulty = 0.5
     env._state.is_resolved = False
@@ -186,3 +187,81 @@ def test_done_resolved_with_docs_can_terminate():
     env._used_write_postmortem = True
     obs = env.step(PageZeroAction(tool="done", args={}))
     assert obs.is_done is True
+
+
+def test_diagnose_overuse_force_terminates_with_fixed_penalty():
+    """Calling `diagnose_root_cause` more than the cap forces episode end with REWARD_DIAGNOSE_OVERUSE."""
+    from server.config import (
+        MAX_DIAGNOSE_ROOT_CAUSE_CALLS,
+        REWARD_DIAGNOSE_OVERUSE,
+    )
+
+    env = _minimal_env_for_step_tests()
+    env._step_count = 0
+    env._history = []
+    env._call_counts = {}
+    # Run enough non-doc steps so the early-doc guard is past.
+    env.step(PageZeroAction(tool="check_alerts", args={}))
+    env.step(PageZeroAction(tool="pg_stat_activity", args={}))
+    # The next call(s) can be diagnose_root_cause. Send cap+1 of them.
+    for _ in range(int(MAX_DIAGNOSE_ROOT_CAUSE_CALLS) + 1):
+        obs = env.step(PageZeroAction(
+            tool="diagnose_root_cause",
+            args={"root_cause": f"hypothesis-{env._step_count}"},
+        ))
+    assert env._diagnose_root_cause_count == int(MAX_DIAGNOSE_ROOT_CAUSE_CALLS) + 1
+    assert obs.is_done is True
+    assert obs.reward == pytest.approx(float(REWARD_DIAGNOSE_OVERUSE))
+    assert "diagnose_root_cause" in (obs.judge_feedback or "")
+    assert "cap=" in (obs.judge_feedback or "")
+
+
+def test_diagnose_overuse_below_cap_does_not_terminate():
+    from server.config import MAX_DIAGNOSE_ROOT_CAUSE_CALLS
+
+    env = _minimal_env_for_step_tests()
+    env._step_count = 0
+    env._history = []
+    env._call_counts = {}
+    env.step(PageZeroAction(tool="check_alerts", args={}))
+    env.step(PageZeroAction(tool="pg_stat_activity", args={}))
+    for i in range(int(MAX_DIAGNOSE_ROOT_CAUSE_CALLS)):
+        obs = env.step(PageZeroAction(
+            tool="diagnose_root_cause",
+            args={"root_cause": f"hypothesis-{i}"},
+        ))
+    assert env._diagnose_root_cause_count == int(MAX_DIAGNOSE_ROOT_CAUSE_CALLS)
+    assert obs.is_done is False
+
+
+def test_strict_done_required_does_not_auto_terminate_on_resolve():
+    """With STRICT_DONE_REQUIRED, even resolved+docs should NOT terminate without explicit `done`."""
+    from server.config import STRICT_DONE_REQUIRED
+
+    if not bool(STRICT_DONE_REQUIRED):
+        pytest.skip("STRICT_DONE_REQUIRED disabled")
+
+    env = _minimal_env_for_step_tests()
+    env._step_count = 5  # next step is 6; past resolve floor
+    env._history = []
+    env._call_counts = {}
+    env._used_diagnose_root_cause = True
+    env._used_write_postmortem = True
+    env.backend.verify_resolution.return_value = True
+    env.judge.verify_resolution.return_value = (True, "ok")
+    obs = env.step(PageZeroAction(tool="pg_cancel_query", args={"pid": 12345}))
+    assert obs.is_done is False
+    assert "call `done`" in (obs.judge_feedback or "")
+
+
+def test_done_diagnose_overuse_constants_in_source():
+    from pathlib import Path
+
+    env_text = (Path(__file__).resolve().parents[1] / "server" / "PageZero_environment.py").read_text()
+    cfg_text = (Path(__file__).resolve().parents[1] / "server" / "config.py").read_text()
+    assert "MAX_DIAGNOSE_ROOT_CAUSE_CALLS" in cfg_text
+    assert "REWARD_DIAGNOSE_OVERUSE" in cfg_text
+    assert "STRICT_DONE_REQUIRED" in cfg_text
+    assert "diagnose_overuse = (" in env_text
+    assert "done_cause = (" in env_text
+    assert "diagnose_overuse" in env_text

@@ -86,6 +86,10 @@ class PageZeroObservation(Observation):
     # Repeat counter for the most recent command (1 = first call, 2 = second, etc.)
     repeat_count: int = Field(default=1, description="How many times the latest tool/args pair has been called this episode")
     done: bool = Field(default=False, description="Is the incident investigation complete?")
+    # Termination diagnostics — populated only on the terminal step. One of:
+    # 'done_accepted', 'timeout', 'diagnose_overuse', 'gate_resolved_auto', 'unknown'.
+    done_cause: Optional[str] = Field(default=None, description="Why the episode terminated (terminal step only)")
+    diagnose_count: int = Field(default=0, description="Cumulative diagnose_root_cause tool calls this episode")
 
 class PageZeroState(State):
     """Internal state of the PageZero Environment."""

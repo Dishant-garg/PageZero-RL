@@ -108,6 +108,19 @@ REQUIRE_DOCS_BEFORE_SUCCESS = os.getenv("PZ_REQUIRE_DOCS_BEFORE_SUCCESS", "1") =
 REWARD_DONE_UNRESOLVED = float(os.getenv("PZ_DONE_UNRESOLVED_PENALTY", "-0.4"))
 REWARD_DONE_BEFORE_DOCS = float(os.getenv("PZ_DONE_BEFORE_DOCS_PENALTY", "-0.3"))
 
+# Diagnose-overuse hard cutoff: cap repeated `diagnose_root_cause` calls so the
+# agent stops abusing the documentation tool as a substitute for investigation.
+# When the cap is exceeded, the episode is force-terminated with a fixed step
+# reward (no terminal bonus / no penalty stacking on top).
+MAX_DIAGNOSE_ROOT_CAUSE_CALLS = int(os.getenv("PZ_MAX_DIAGNOSE_CALLS", "2"))
+REWARD_DIAGNOSE_OVERUSE = float(os.getenv("PZ_DIAGNOSE_OVERUSE_PENALTY", "-1.0"))
+
+# Strict-stop policy: when True, the env terminates only on (a) explicit `done`
+# tool with all gates satisfied, (b) timeout, or (c) diagnose-overuse cutoff.
+# Auto-terminating on (gate_resolve_ready and docs_ready) without an explicit
+# `done` call is disabled — this teaches the agent to recognize completion.
+STRICT_DONE_REQUIRED = os.getenv("PZ_STRICT_DONE_REQUIRED", "1") == "1"
+
 # ═══════════════════════════════════════════════════════════════════
 # Terminal reward (high-variance, kube-sre-gym style)
 # ═══════════════════════════════════════════════════════════════════

@@ -93,6 +93,73 @@ uv run python train.py --model-id Qwen/Qwen2.5-Coder-7B-Instruct --dataset-size 
 
 ---
 
+## 📊 Results & Submission Artifacts
+
+Each training run produces a single canonical run directory with:
+
+```
+outputs/<run-id>/
+├── reward_log.csv              # per-episode rewards, done_cause, diagnose_count
+├── trajectories.jsonl          # full per-step trajectories
+├── baseline_eval.json          # base-model deterministic eval
+├── final_eval.json             # trained-adapter deterministic eval
+└── plots/
+    ├── plot_01_overall_reward_curve.png
+    ├── plot_02_resolved_rate_curve.png
+    ├── plot_03_taskwise_baseline_vs_trained_reward.png
+    ├── plot_04_taskwise_baseline_vs_trained_success.png
+    └── plot_05_termination_reason_distribution.png
+```
+
+These are produced by:
+1. `scripts/eval_checkpoint.py` — deterministic baseline / trained eval (fixed seeds, greedy decoding).
+2. `scripts/generate_submission_plots.py` — reads `reward_log.csv` + the two eval JSONs and writes the 5 PNGs above.
+3. `PageZe.ipynb` — orchestrates baseline → train → final eval → plots end-to-end.
+
+### Reward / termination policy (see `server/PageZero_environment.py`)
+
+* **Stop-only-on-correct-completion**: an episode terminates with no terminal penalty **only** when the agent calls `done` AND the resolution gate confirms (programmatic + judge) AND `diagnose_root_cause` + `write_postmortem` are both recorded AND `step >= MIN_STEPS_BEFORE_DONE`. Otherwise the episode continues with a small penalty so the agent learns to recognize completion.
+* **Diagnose-overuse cutoff**: if `diagnose_root_cause` is called more than `MAX_DIAGNOSE_ROOT_CAUSE_CALLS` (default 2) in one episode, the episode is force-terminated with a fixed step reward of `REWARD_DIAGNOSE_OVERUSE` (default `-1.0`). This prevents the agent from substituting the documentation tool for real investigation.
+* **Timeout** still ends the episode at `DEFAULT_MAX_STEPS` and wipes net reward to `TERMINAL_TIMEOUT_FAIL_TOTAL` (default `-2.0`).
+
+Each terminal observation now carries `done_cause` ∈ `{done_accepted, timeout, diagnose_overuse, gate_resolved_auto, unknown}` and a running `diagnose_count`, both written to `reward_log.csv` for offline analysis and the termination-reason plot.
+
+### Example baseline → trained delta (placeholder; replace with real run)
+
+| Task   | Baseline reward | Trained reward | Δ      | Baseline resolved | Trained resolved |
+|--------|-----------------|----------------|--------|-------------------|------------------|
+| task_1 | _TBD_           | _TBD_          | _TBD_  | _TBD_             | _TBD_            |
+| task_2 | _TBD_           | _TBD_          | _TBD_  | _TBD_             | _TBD_            |
+| task_3 | _TBD_           | _TBD_          | _TBD_  | _TBD_             | _TBD_            |
+| task_4 | _TBD_           | _TBD_          | _TBD_  | _TBD_             | _TBD_            |
+| task_5 | _TBD_           | _TBD_          | _TBD_  | _TBD_             | _TBD_            |
+
+> Fill this table from `final_eval.json` after a real run. The `overall.reward_mean` and `overall.resolved_rate` give the headline numbers.
+
+### Embedded plots
+
+Once you've run `scripts/generate_submission_plots.py`, the PNGs render directly in this README via the run directory:
+
+```markdown
+![Reward curve](outputs/<run-id>/plots/plot_01_overall_reward_curve.png)
+![Resolved rate](outputs/<run-id>/plots/plot_02_resolved_rate_curve.png)
+![Per-task reward](outputs/<run-id>/plots/plot_03_taskwise_baseline_vs_trained_reward.png)
+![Per-task resolved](outputs/<run-id>/plots/plot_04_taskwise_baseline_vs_trained_success.png)
+![Termination reasons](outputs/<run-id>/plots/plot_05_termination_reason_distribution.png)
+```
+
+### Submission links
+
+| Artifact            | Link                                                                                       |
+|---------------------|--------------------------------------------------------------------------------------------|
+| HF Space (env)      | <https://huggingface.co/spaces/Maruti777/pagezero-agent>                                   |
+| Colab notebook      | _add public Colab URL after upload (PageZe.ipynb)_                                          |
+| Trained adapter     | _add HF model repo URL (e.g. `pranayy/pagezero_agent`)_                                     |
+| Mini-blog / video   | _add ≤2-min explainer URL_                                                                  |
+| WandB / Trackio     | _optional: training run dashboard URL_                                                      |
+
+---
+
 ## 📚 Built-in RL Mechanisms
 
 PageZero contains multiple advanced RL environment features that prevent overfitting and guarantee agent robustness:

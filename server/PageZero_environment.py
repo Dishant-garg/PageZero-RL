@@ -24,14 +24,17 @@ from .schema_drift import SchemaDriftEngine
 from .config import (
     DEFAULT_MAX_STEPS,
     INJECTION_WAIT_SECONDS,
+    MAX_DIAGNOSE_ROOT_CAUSE_CALLS,
     MIN_STEPS_BEFORE_DONE,
     MIN_STEPS_BEFORE_RESOLVE,
     REQUIRE_DOCS_BEFORE_SUCCESS,
+    REWARD_DIAGNOSE_OVERUSE,
     REWARD_DONE_BEFORE_DOCS,
     REWARD_DONE_UNRESOLVED,
     REWARD_EARLY_DOC_BLOCK,
     REWARD_REPEAT_2X,
     REWARD_REPEAT_3X,
+    STRICT_DONE_REQUIRED,
     TERMINAL_RESOLVED_BASE,
     TERMINAL_RESOLVED_DIFF_WEIGHT,
     TERMINAL_RESOLVED_EFFICIENCY_WEIGHT,
@@ -91,6 +94,9 @@ class PageZeroEnvironment(Environment):
         self._episode_count = 0
         self._cumulative_reward = 0.0
         self._call_counts: Dict[str, int] = {}
+        self._used_diagnose_root_cause = False
+        self._used_write_postmortem = False
+        self._diagnose_root_cause_count = 0
         self._state = PageZeroState(episode_id=str(uuid4()), step_count=0)
 
     # ─────────────────────────────────────────────────────────────────────
@@ -105,6 +111,7 @@ class PageZeroEnvironment(Environment):
         self._call_counts = {}
         self._used_diagnose_root_cause = False
         self._used_write_postmortem = False
+        self._diagnose_root_cause_count = 0
 
         self._cleanup_previous_episode()
 
@@ -223,6 +230,7 @@ class PageZeroEnvironment(Environment):
             output = self.executor.execute(tool, args)
             if tool == "diagnose_root_cause":
                 self._used_diagnose_root_cause = True
+                self._diagnose_root_cause_count += 1
             elif tool == "write_postmortem":
                 self._used_write_postmortem = True
 
@@ -277,10 +285,13 @@ class PageZeroEnvironment(Environment):
         sla_info = self.backend.get_sla_status()
 
         # 7) Two-stage resolution gate: programmatic poll + LLM verifier.
+        # Fires after fix tools (auto-verification) AND after `done` so the
+        # agent's self-reported termination is checked against ground truth.
         gate_resolved = False
         gate_reason = ""
         stack_healthy: Optional[bool] = None
-        if is_fix_step and not circuit_broken:
+        gate_check_step = (is_fix_step or tool == "done") and not circuit_broken
+        if gate_check_step:
             stack_healthy = self.backend.verify_resolution()
             if stack_healthy:
                 snapshot = self._snapshot_text()
@@ -304,7 +315,20 @@ class PageZeroEnvironment(Environment):
         docs_required = bool(REQUIRE_DOCS_BEFORE_SUCCESS)
         docs_ready = (not docs_required) or docs_complete
 
-        # 8) Termination logic: timeout OR (resolved + docs) OR accepted done.
+        # 8) Termination logic.
+        #
+        # Correct-stop policy: an episode terminates ONLY when one of the
+        # following is true —
+        #   (a) `done_accepted`  : agent called `done` AND gate is resolved AND
+        #                          docs complete AND step >= MIN_STEPS_BEFORE_DONE
+        #   (b) `timeout`        : step_count >= max_steps
+        #   (c) `diagnose_overuse`: diagnose_root_cause called more than the cap
+        #
+        # When `done` is called but the gate/docs/step floor is not satisfied,
+        # the episode CONTINUES and a penalty is applied. When the
+        # programmatic+judge gate auto-confirms resolution without an explicit
+        # `done` tool call, the episode also continues — this teaches the agent
+        # to recognize completion and call `done`.
         gate_resolve_ready = (
             gate_resolved and self._step_count >= int(MIN_STEPS_BEFORE_RESOLVE)
         )
@@ -320,12 +344,39 @@ class PageZeroEnvironment(Environment):
         docs_missing_done = (done_step_ready and gate_resolve_ready and not docs_ready)
         done_accepted = (done_step_ready and gate_resolve_ready and docs_ready)
         timeout = (self._step_count >= self._max_steps)
-        done = timeout or done_accepted or (gate_resolve_ready and docs_ready)
+        diagnose_overuse = (
+            self._diagnose_root_cause_count > int(MAX_DIAGNOSE_ROOT_CAUSE_CALLS)
+        )
 
+        # Per user policy: stop only on truly-correct termination. When the
+        # agent has not explicitly called `done`, do not auto-end on the
+        # resolve+docs gate alone (unless we relax STRICT_DONE_REQUIRED).
+        auto_terminate_on_gate = (
+            (not bool(STRICT_DONE_REQUIRED))
+            and gate_resolve_ready
+            and docs_ready
+        )
+        done = (
+            timeout
+            or done_accepted
+            or diagnose_overuse
+            or auto_terminate_on_gate
+        )
+
+        # Penalties for done attempts that don't satisfy the gates.
+        # These DO NOT terminate the episode under STRICT_DONE_REQUIRED — they
+        # just feed gradient back to the agent so it learns to wait for true
+        # completion before calling `done`.
         if premature_done or unresolved_done:
             step_reward += float(REWARD_DONE_UNRESOLVED)
         if docs_missing_done:
             step_reward += float(REWARD_DONE_BEFORE_DOCS)
+
+        # Diagnose-overuse cutoff: hard reset of step reward to a fixed
+        # negative value so the gradient is unambiguous, regardless of any
+        # other shaping that landed in this step.
+        if diagnose_overuse:
+            step_reward = float(REWARD_DIAGNOSE_OVERUSE)
 
         canonical_score: Optional[float] = None
         terminal_training_score = 0.0
@@ -345,7 +396,24 @@ class PageZeroEnvironment(Environment):
                         gate_resolved and self._step_count >= int(MIN_STEPS_BEFORE_RESOLVE)
                     )
 
-            if timeout and not (gate_resolve_ready and docs_ready):
+            if diagnose_overuse:
+                # Hard cutoff: too many `diagnose_root_cause` calls. Force end
+                # with a fixed negative reward — no terminal bonus, no judge
+                # blend. The agent must learn to investigate (run real triage
+                # tools) instead of spamming the documentation tool.
+                self._cumulative_reward = float(REWARD_DIAGNOSE_OVERUSE)
+                self._state.cumulative_reward = self._cumulative_reward
+                judge_feedback = (
+                    f"Episode terminated: `diagnose_root_cause` called "
+                    f"{self._diagnose_root_cause_count} times "
+                    f"(cap={MAX_DIAGNOSE_ROOT_CAUSE_CALLS}). "
+                    f"Use investigation tools (pg_stat_activity, redis_info, "
+                    f"docker_logs, ...) instead of the documentation tool."
+                )
+                canonical_score = self.judge._canonical_score(0.0)
+                self._state.is_resolved = False
+                terminal_training_score = 0.0
+            elif timeout and not (gate_resolve_ready and docs_ready):
                 # kube-sre-gym wipe: net total reward becomes a clean -2.0
                 raw_sum = sum(h["reward"] for h in self._history)
                 terminal_training_score = TERMINAL_TIMEOUT_FAIL_TOTAL - raw_sum
@@ -390,9 +458,10 @@ class PageZeroEnvironment(Environment):
                 )
 
             done_cause = (
-                "gate_resolved" if (gate_resolve_ready and docs_ready)
+                "diagnose_overuse" if diagnose_overuse
+                else "done_accepted" if done_accepted
                 else "timeout" if timeout
-                else "done_tool" if done_accepted
+                else "gate_resolved_auto" if auto_terminate_on_gate
                 else "unknown"
             )
             # Feed result back into the legacy curriculum (used by the
@@ -410,7 +479,8 @@ class PageZeroEnvironment(Environment):
                 f"cause={done_cause} "
                 f"docs_complete={docs_complete} "
                 f"resolve_ready={gate_resolve_ready} "
-                f"done_accepted={done_accepted}"
+                f"done_accepted={done_accepted} "
+                f"diagnose_count={self._diagnose_root_cause_count}"
             )
         elif premature_done:
             judge_feedback = (
@@ -433,6 +503,16 @@ class PageZeroEnvironment(Environment):
                 f"Resolution confirmed but deferred until step >= {MIN_STEPS_BEFORE_RESOLVE} "
                 f"for deeper trajectories."
             )
+        elif (
+            gate_resolve_ready
+            and docs_ready
+            and bool(STRICT_DONE_REQUIRED)
+            and not done_requested
+        ):
+            judge_feedback = (
+                "Stack RESOLVED and documentation complete — call `done` to "
+                "end the episode cleanly (no penalty)."
+            )
 
         # 9) Auto-include a fresh stack snapshot after a fix or on done so the
         #    agent does not need to spend a turn re-checking.
@@ -442,6 +522,18 @@ class PageZeroEnvironment(Environment):
                 output = f"{output}\n\n--- POST-ACTION STACK SNAPSHOT ---\n{snapshot}"
             except Exception:
                 pass
+
+        # Surface termination cause & diagnose count on the observation so
+        # downstream loggers/plot scripts can attribute episodes correctly.
+        obs_done_cause: Optional[str] = None
+        if done:
+            obs_done_cause = (
+                "diagnose_overuse" if diagnose_overuse
+                else "done_accepted" if done_accepted
+                else "timeout" if timeout
+                else "gate_resolved_auto" if auto_terminate_on_gate
+                else "unknown"
+            )
 
         return PageZeroObservation(
             tool_output=output,
@@ -464,6 +556,8 @@ class PageZeroEnvironment(Environment):
             is_fix_step=is_fix_step,
             repeat_count=repeat_count,
             done=done,
+            done_cause=obs_done_cause,
+            diagnose_count=int(self._diagnose_root_cause_count),
         )
 
     # ─────────────────────────────────────────────────────────────────────
