@@ -1,6 +1,6 @@
 ---
 title: Pagezero Environment Server
-emoji: ""
+emoji: ⌨️
 colorFrom: green
 colorTo: pink
 sdk: docker
