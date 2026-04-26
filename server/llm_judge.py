@@ -49,10 +49,49 @@ _FIX_TOOLS = {
 _VERIFY_TOOLS = {"get_service_metrics", "curl_endpoint", "pg_stat_activity", "redis_info"}
 _DOCUMENT_TOOLS = {"diagnose_root_cause", "write_postmortem", "done"}
 
+# Public so PageZero_environment.py and the notebook wrapper can share the
+# same canonical fix-tool set instead of redefining their own prefix list.
+FIX_TOOLS = frozenset(_FIX_TOOLS)
+TRIAGE_TOOLS = frozenset(_TRIAGE_TOOLS)
+INVESTIGATE_TOOLS = frozenset(_INVESTIGATE_TOOLS)
+DIAGNOSE_TOOLS = frozenset(_DIAGNOSE_TOOLS)
+VERIFY_TOOLS = frozenset(_VERIFY_TOOLS)
+DOCUMENT_TOOLS = frozenset(_DOCUMENT_TOOLS)
+
 PHASE_ORDER = {
     "triage": 0, "investigate": 1, "diagnose": 2,
     "fix": 3, "verify": 4, "document": 5,
 }
+
+# Persona prompts used by ``LLMJudge.evaluate_terminal``. Mirrors
+# kube-sre-gym so the agent is graded leniently while learning the easy
+# tasks and strictly once it advances to harder difficulties.
+PERSONAS = {
+    "junior": (
+        "You are a Junior SRE mentor evaluating a trainee's incident response. "
+        "Be encouraging and lenient — give partial credit for partially correct "
+        "approaches. Provide concrete hints in your feedback. Accept approximate answers."
+    ),
+    "senior": (
+        "You are a Senior SRE evaluating an engineer's incident response. "
+        "Apply standard expectations. Reward systematic diagnosis. "
+        "Penalize repeated commands and irrelevant actions."
+    ),
+    "principal": (
+        "You are a Principal SRE evaluating incident response with high standards. "
+        "Reward efficiency: a fast, correct fix is GOOD. Penalize WRONG fixes, not fast ones. "
+        "For multi-fault scenarios, reward fixing ALL faults and penalize incomplete fixes."
+    ),
+}
+
+
+def persona_for_difficulty(difficulty: float) -> str:
+    """Map curriculum difficulty (0-1) to a judge persona."""
+    if difficulty < 0.4:
+        return "junior"
+    if difficulty < 0.7:
+        return "senior"
+    return "principal"
 
 
 def detect_phase(tool: str, history: list) -> str:
@@ -86,6 +125,9 @@ def phase_score(current_phase: str, history: list) -> float:
     convention used by :class:`PageZeroEnvironment`). We always strip the last
     entry so ``past_phases`` represents only the *prior* trajectory; this also
     makes the "first action" branch reachable on step 1.
+
+    Magnitudes (``+0.2`` correct order / ``-0.3`` skipped) match kube-sre-gym's
+    deterministic shaping so the gradient stays comparable across env families.
     """
     current_order = PHASE_ORDER.get(current_phase, 1)
     past_history = history[:-1] if history else []
@@ -114,6 +156,25 @@ def phase_score(current_phase: str, history: list) -> float:
         return REWARD_BACKWARD_PHASE
 
 
+def get_skipped_phases(current_phase: str, history: list) -> list[str]:
+    """Return the names of phases skipped between the most-advanced past
+    phase and ``current_phase``. Used purely for feedback strings.
+    """
+    current_order = PHASE_ORDER.get(current_phase, 0)
+    if current_order <= 1:
+        return []
+    past_history = history[:-1] if history else []
+    past_phases = {
+        detect_phase(h.get("tool", ""), past_history[:i])
+        for i, h in enumerate(past_history)
+    }
+    past_phases.add(current_phase)
+    return [
+        phase for phase, order in PHASE_ORDER.items()
+        if order < current_order and phase not in past_phases
+    ]
+
+
 class LLMJudge:
     @staticmethod
     def _canonical_score(value: float) -> float:
@@ -137,21 +198,32 @@ class LLMJudge:
             self.client = None
 
     def get_phase_reward(self, tool: str, history: list,
-                         scenario: dict | None = None) -> float:
+                         scenario: dict | None = None,
+                         return_feedback: bool = False):
         """Return a per-step reward using Gemini when available.
 
         Gemini judges whether the current tool is the right next action given
         the scenario context and recent history.  Falls back to deterministic
         :func:`phase_score` on any API error so the training signal is never
         a silent zero.
+
+        When ``return_feedback`` is true, returns ``(reward, feedback)``; the
+        feedback string is used by the env to populate ``judge_feedback`` on
+        the observation so the agent sees a textual hint each turn.
         """
         # ``history`` includes the current step at index -1 (env convention),
         # so build a *prior* view for the deterministic detector.
         prior_history = history[:-1] if history else []
-        deterministic = phase_score(detect_phase(tool, prior_history), history)
+        current_phase = detect_phase(tool, prior_history)
+        deterministic = phase_score(current_phase, history)
+        skipped = get_skipped_phases(current_phase, history)
+        det_feedback = (
+            f"phase={current_phase} (det={deterministic:+.2f})"
+            + (f"; skipped: {','.join(skipped)}" if skipped else "")
+        )
 
         if not self.client or not scenario:
-            return deterministic
+            return (deterministic, det_feedback) if return_feedback else deterministic
 
         # The 'history' list now includes the current step at the very end.
         # We must split this into PRIOR HISTORY and the CURRENT ACTION to prevent overlap.
@@ -237,16 +309,84 @@ Return ONLY the JSON."""
             blended = 0.7 * llm_reward + 0.3 * deterministic
             print(f"  [Judge] {tool}: LLM={llm_reward:+.2f} det={deterministic:+.2f}"
                   f" → {blended:+.2f} | {rationale}")
-            return round(blended, 3)
+            blended = round(blended, 3)
+            feedback = f"{rationale} | {det_feedback}"
+            if return_feedback:
+                return blended, feedback
+            return blended
         except Exception as e:
             # Rate limits / network errors → fall back to the deterministic
             # phase signal so the policy still gets a meaningful gradient.
             if "429" not in str(e) and "503" not in str(e):
                 print(f"  [Judge] Step reward LLM error: {e} (using deterministic={deterministic:+.2f})")
+            if return_feedback:
+                return deterministic, det_feedback
             return deterministic
 
+    # ── Two-stage resolution gate ─────────────────────────────────────
+    def verify_resolution(
+        self, scenario: dict, history: list, stack_snapshot: str
+    ) -> tuple[bool, str]:
+        """Ask the LLM whether the incident is *actually* resolved.
+
+        Called from the env *after* the programmatic ``stack_healthy`` poll
+        passes. The LLM looks at the action history and the most recent
+        stack snapshot and decides whether the right fault was fixed (not
+        just whether the stack happens to look healthy).
+
+        Returns ``(resolved, reason)``. If the LLM client is unavailable
+        the gate degrades to "trust the programmatic check" so training
+        does not silently stall when ``GEMINI_API_KEY`` is missing.
+        """
+        if not self.client:
+            return True, "Programmatic stack_healthy=True; no LLM judge configured."
+
+        history_summary = "\n".join(
+            f"  Step {i+1}: {h.get('tool', '?')} -> {str(h.get('output', ''))[:120]}"
+            for i, h in enumerate(history)
+        ) or "  (no history)"
+
+        prompt = f"""You are verifying whether a production SRE incident was ACTUALLY resolved.
+
+INCIDENT:
+- Alert: {scenario.get('alert', '')}
+- Root cause: {scenario.get('root_cause', '')}
+- Expected fix tools: {', '.join(scenario.get('expected_fix', []))}
+
+AGENT'S ACTIONS:
+{history_summary}
+
+CURRENT STACK SNAPSHOT:
+{stack_snapshot[:3500]}
+
+QUESTION: Did the agent actually fix the root cause described above?
+Look for:
+- Did the agent target the *correct* layer (db / cache / app / infra)?
+- Was an effective fix tool actually invoked, not just a diagnosis?
+- Does the snapshot show the symptom is gone (no runaway queries, no OOM, app healthy)?
+
+Return JSON only: {{"resolved": true|false, "reason": "<1-2 sentence explanation>"}}
+"""
+        try:
+            from google.genai import types
+            response = self.client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                ),
+            )
+            data = json.loads(response.text)
+            resolved = bool(data.get("resolved", False))
+            reason = str(data.get("reason", ""))
+            return resolved, reason
+        except Exception as e:
+            print(f"  [Judge] verify_resolution error: {e}; defaulting to programmatic check.")
+            return True, f"verify_resolution error: {type(e).__name__}; defaulting to True."
+
     def evaluate_terminal(
-        self, scenario: dict, history: list, stack_healthy: bool, sla_status: dict
+        self, scenario: dict, history: list, stack_healthy: bool, sla_status: dict,
+        persona: str = "senior",
     ) -> tuple[float, float, str]:
         """Score a finished episode.
 
@@ -277,7 +417,8 @@ Return ONLY the JSON."""
                 trimmed["output"] = out[:500] + "... [truncated]"
             trimmed_history.append(trimmed)
 
-        prompt = f"""You are a Principal SRE Judge evaluating a junior agent's incident response.
+        persona_prompt = PERSONAS.get(persona, PERSONAS["senior"])
+        prompt = f"""{persona_prompt}
 
 SCENARIO:
 Name: {scenario.get('name', 'unknown')}

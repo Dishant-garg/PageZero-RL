@@ -1,5 +1,5 @@
 from openenv.core.env_server.types import Action, Observation, State
-from pydantic import Field
+from pydantic import Field, ConfigDict
 from typing import Literal, Dict, Any, Optional, List
 
 ToolName = Literal[
@@ -53,6 +53,9 @@ class PageZeroAction(Action):
 
 class PageZeroObservation(Observation):
     """The environment state and telemetry data returned after each action."""
+    # Forward/backward compatibility guard:
+    # tolerate unknown observation keys when backend/client versions differ.
+    model_config = ConfigDict(extra="allow")
     tool_output: str = Field(default="", description="Result of the last tool call")
     active_alerts: List[str] = Field(default_factory=list, description="Current firing PagerDuty alerts")
     sla_status: str = Field(default="OK", description="Current SLA status (OK/DEGRADED/VIOLATED)")
@@ -62,9 +65,26 @@ class PageZeroObservation(Observation):
     max_steps: int = Field(default=15, description="Maximum allowed steps before failure")
     hint: Optional[str] = Field(default=None, description="Optional feedback or error hints")
     phase_history: List[str] = Field(default_factory=list, description="SRE phases executed so far")
-    is_done: bool = Field(default=False, description="Whether the incident was successfully resolved (legacy field)")
+    # Termination flag — true when the episode ended (whether successful or not).
+    # Kept for backward compatibility; do NOT use this as a "did we fix it?"
+    # signal — the wrapper used to do that and silently mislabeled every
+    # premature `done` as resolved. Read ``stack_healthy`` instead.
+    is_done: bool = Field(default=False, description="Whether the episode terminated (legacy; use stack_healthy for resolution)")
+    # Real, programmatic resolution signal: True only when the backend health
+    # poll AND (when available) the LLM judge BOTH confirm the stack is fixed.
+    # Populated on the terminal step; auto-included after any fix-shaped tool.
+    stack_healthy: Optional[bool] = Field(default=None, description="Programmatic + judge-confirmed stack health (None if not yet evaluated)")
     final_score: Optional[float] = Field(default=None, description="Terminal reward score")
     reward: float = Field(default=0.0, description="Step reward")
+    # Last-turn judge feedback / hint, surfaced so the next user prompt can
+    # show the agent why the previous step earned its reward.
+    judge_feedback: Optional[str] = Field(default=None, description="One-line judge feedback for the latest step")
+    # SRE workflow phase the most recent action was classified into.
+    phase: Optional[str] = Field(default=None, description="Detected SRE phase of the latest action")
+    # True if the env auto-classified this step as a fix attempt (mutation tool).
+    is_fix_step: bool = Field(default=False, description="Whether the env treated the last action as a fix attempt")
+    # Repeat counter for the most recent command (1 = first call, 2 = second, etc.)
+    repeat_count: int = Field(default=1, description="How many times the latest tool/args pair has been called this episode")
     done: bool = Field(default=False, description="Is the incident investigation complete?")
 
 class PageZeroState(State):

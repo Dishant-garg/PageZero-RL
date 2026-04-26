@@ -81,13 +81,40 @@ DRIFT_TRIGGER_STEP_CACHE = 6
 HARD_SCENARIO_THRESHOLD = 0.6   # difficulty > this → hard scenario
 
 # ═══════════════════════════════════════════════════════════════════
-# Phase-Based Reward Values
+# Phase-Based Reward Values (kube-sre-gym aligned: +0.2 correct, -0.3 skipped)
 # ═══════════════════════════════════════════════════════════════════
-REWARD_TRIAGE_FIRST = 0.15       # Triage as first action
-REWARD_WRONG_FIRST = -0.1        # Non-triage as first action
-REWARD_CORRECT_ORDER = 0.10      # Correct SRE phase ordering
-REWARD_SKIPPED_PHASE = -0.20     # Skipped a phase
-REWARD_BACKWARD_PHASE = -0.10    # Went backward in SRE workflow
+REWARD_TRIAGE_FIRST = 0.20       # Triage as first action
+REWARD_WRONG_FIRST = -0.15       # Non-triage as first action
+REWARD_CORRECT_ORDER = 0.20      # Correct SRE phase ordering
+REWARD_SKIPPED_PHASE = -0.30     # Skipped a phase
+REWARD_BACKWARD_PHASE = -0.15    # Went backward in SRE workflow
+
+# ═══════════════════════════════════════════════════════════════════
+# Repeat-command penalty (escalating + circuit breaker, kube-sre-gym style)
+# ═══════════════════════════════════════════════════════════════════
+REWARD_REPEAT_2X = -0.30         # 2nd identical (tool, args) call
+REWARD_REPEAT_3X = -0.50         # 3rd+ identical call → circuit breaker, output replaced
+
+# ═══════════════════════════════════════════════════════════════════
+# Output-format / parse-failure penalty
+# ═══════════════════════════════════════════════════════════════════
+REWARD_NO_TOOL_CALL = -0.5       # Completion did not parse to any valid tool call
+
+# Tier-1 curriculum guard: block documentation tools before real triage/investigate
+REWARD_EARLY_DOC_BLOCK = -0.5    # diagnose_root_cause / write_postmortem on step < 3
+MIN_STEPS_BEFORE_DONE = int(os.getenv("PZ_MIN_STEPS_BEFORE_DONE", "3"))
+MIN_STEPS_BEFORE_RESOLVE = int(os.getenv("PZ_MIN_STEPS_BEFORE_RESOLVE", "5"))
+REQUIRE_DOCS_BEFORE_SUCCESS = os.getenv("PZ_REQUIRE_DOCS_BEFORE_SUCCESS", "1") == "1"
+REWARD_DONE_UNRESOLVED = float(os.getenv("PZ_DONE_UNRESOLVED_PENALTY", "-0.4"))
+REWARD_DONE_BEFORE_DOCS = float(os.getenv("PZ_DONE_BEFORE_DOCS_PENALTY", "-0.3"))
+
+# ═══════════════════════════════════════════════════════════════════
+# Terminal reward (high-variance, kube-sre-gym style)
+# ═══════════════════════════════════════════════════════════════════
+TERMINAL_RESOLVED_BASE = 1.0     # base bonus when both gates confirm resolution
+TERMINAL_RESOLVED_DIFF_WEIGHT = 2.0   # difficulty-scaled multiplier
+TERMINAL_RESOLVED_EFFICIENCY_WEIGHT = 2.0  # extra (1 - steps/max_steps) bonus
+TERMINAL_TIMEOUT_FAIL_TOTAL = -2.0  # net total for timeout / unresolved-done
 
 # ═══════════════════════════════════════════════════════════════════
 # Terminal Evaluation Reward Values
